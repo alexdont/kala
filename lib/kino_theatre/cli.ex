@@ -1002,8 +1002,26 @@ defmodule KinoTheatre.CLI do
   # Runs inside fzf's preview pane: {2} is the poster URL column. Downloads
   # once into a tmp cache, renders with chafa sized to the pane.
   @poster_preview ~S"""
-  url={2}; if [ "$url" = "-" ]; then echo; else f="${TMPDIR:-/tmp}/kino-poster-$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
+  url={2}; if [ "$url" = "-" ]; then echo; else f="${TMPDIR:-/tmp}/kino-poster-$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa CHAFA_OPTS --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
   """ |> String.trim()
+
+  # Inside fzf's preview pipe chafa can't auto-detect terminal graphics, so
+  # it silently degrades to colored block characters. Force the pixel
+  # protocol by terminal identity instead; block symbols only as last resort.
+  defp poster_preview_script do
+    term = System.get_env("TERM") || ""
+    program = System.get_env("TERM_PROGRAM") || ""
+
+    chafa_opts =
+      cond do
+        String.contains?(term, "foot") -> "-f sixels"
+        String.contains?(term, "kitty") or String.contains?(term, "ghostty") -> "-f kitty"
+        program in ["ghostty", "kitty", "WezTerm"] -> "-f kitty"
+        true -> "-f symbols --symbols block"
+      end
+
+    String.replace(@poster_preview, "CHAFA_OPTS", chafa_opts)
+  end
 
   defp pick_fzf(items, describe, header, preview) do
     preview? = preview != nil and System.find_executable("chafa") != nil
@@ -1020,7 +1038,7 @@ defmodule KinoTheatre.CLI do
     fzf =
       if preview? do
         ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse --height=~90% ) <>
-          ~s(--header="$2" --preview-window=right,28%,border-left --preview '#{@poster_preview}' < "$1")
+          ~s(--header="$2" --preview-window=right,28%,border-left --preview '#{poster_preview_script()}' < "$1")
       else
         ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% --header="$2" < "$1")
       end
