@@ -34,6 +34,27 @@ defmodule KinoTheatre.Tmdb do
     end
   end
 
+  @doc """
+  Popular anime — Japanese-language animation TV, popularity-first (TMDB has
+  no anime media type, so this is the discover equivalent). Returns
+  `{:ok, results, more?}` like `trending/2`.
+  """
+  def discover_anime(page \\ 1) do
+    with {:ok, %{"results" => results} = body} <-
+           get("/discover/tv",
+             with_genres: 16,
+             with_original_language: "ja",
+             sort_by: "popularity.desc",
+             # popularity alone floats low-vote fringe titles; a vote floor
+             # keeps the list mainstream without losing long-running classics
+             "vote_count.gte": 200,
+             page: page
+           ) do
+      {:ok, Enum.map(results, &normalize(Map.put(&1, "media_type", "tv"))),
+       page < (body["total_pages"] || 1)}
+    end
+  end
+
   # Append external_ids so `imdb_id/1` works for both movies (top-level imdb_id)
   # and TV (external_ids.imdb_id) — used to query Torrentio for more sources.
   def movie(id), do: get("/movie/#{id}", append_to_response: "external_ids")

@@ -22,8 +22,38 @@ defmodule KinoTheatre.CLI do
       ["config" | _] -> config()
       ["help" | _] -> usage(0)
       ["--help" | _] -> usage(0)
-      [] -> usage(1)
+      [] -> if tty?(), do: main_menu(), else: usage(1)
       [other | _] -> die("unknown command: #{other} (try: kino help)")
+    end
+  end
+
+  # ── main menu (bare `kino` at a terminal) ─────────────────────────
+
+  defp main_menu do
+    items = [
+      {:continue, "Continue — resume what you were watching"},
+      {:featured, "Featured — trending movies, shows & anime"},
+      {:search, "Search — find something by name"}
+    ]
+
+    case pick(items, fn {_action, label} -> label end, "kino") do
+      nil -> System.halt(0)
+      {:continue, _} -> continue()
+      {:featured, _} -> featured()
+      {:search, _} -> menu_search()
+    end
+  end
+
+  defp menu_search do
+    case IO.gets("search for: ") do
+      :eof ->
+        System.halt(0)
+
+      line ->
+        case String.trim(line) do
+          "" -> System.halt(0)
+          query -> watch([query])
+        end
     end
   end
 
@@ -315,9 +345,10 @@ defmodule KinoTheatre.CLI do
     end
 
     type =
-      case pick(["movies", "shows"], &String.capitalize/1, "what are you in the mood for?") do
+      case pick(["movies", "shows", "anime"], &String.capitalize/1, "what are you in the mood for?") do
         "movies" -> "movie"
         "shows" -> "tv"
+        "anime" -> :anime
         nil -> System.halt(0)
       end
 
@@ -327,20 +358,26 @@ defmodule KinoTheatre.CLI do
 
   defp pick_featured(type, page, acc) do
     {results, more?} =
-      case Tmdb.trending(type, page) do
+      case featured_page(type, page) do
         {:ok, results, more?} -> {results, more?}
         {:error, reason} -> die(tmdb_error(reason, "trending lookup"))
       end
 
     titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
     items = if more?, do: titles ++ [:more], else: titles
-    label = if type == "movie", do: "movies", else: "shows"
 
-    case pick(items, &describe_title_item/1, "trending #{label} this week") do
+    case pick(items, &describe_title_item/1, featured_header(type)) do
       :more -> pick_featured(type, page + 1, titles)
       other -> other
     end
   end
+
+  defp featured_page(:anime, page), do: Tmdb.discover_anime(page)
+  defp featured_page(type, page), do: Tmdb.trending(type, page)
+
+  defp featured_header(:anime), do: "popular anime"
+  defp featured_header("movie"), do: "trending movies this week"
+  defp featured_header("tv"), do: "trending shows this week"
 
   defp split_year(query) do
     case Regex.run(~r/^(.*?)\s+((?:19|20)\d{2})\s*$/, String.trim(query)) do
@@ -966,6 +1003,7 @@ defmodule KinoTheatre.CLI do
     kino — search sources, resolve via your debrid account, play in mpv
 
     usage:
+      kino                   open the interactive menu (Continue / Featured / Search)
       kino watch "<title>"   [--raw] [--backend apibay|nyaa|anime] [--limit N]
       kino featured          browse what's trending on TMDB and pick something
       kino continue          resume what you were watching
