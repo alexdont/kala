@@ -15,6 +15,7 @@ defmodule KinoTheatre.CLI do
     case argv do
       ["search" | rest] -> search(rest)
       ["watch" | rest] -> watch(rest)
+      ["download" | rest] -> download(rest)
       ["featured" | _] -> featured()
       ["continue" | _] -> continue()
       ["resolve" | rest] -> resolve(rest)
@@ -169,12 +170,24 @@ defmodule KinoTheatre.CLI do
 
   # ── watch (interactive) ───────────────────────────────────────────
 
-  defp watch(argv) do
+  defp watch(argv), do: run_watch(argv)
+
+  # Same flow as watch, but the chosen stream is saved to disk instead of
+  # played. The mode is read at the single point where playback happens
+  # (finish_play/4), so the whole title/source pipeline is shared.
+  defp download(argv) do
+    Process.put(:kino_mode, :download)
+    run_watch(argv)
+  end
+
+  defp run_watch(argv) do
     {opts, query} = watch_args(argv)
 
     unless RD.configured?() do
       die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
     end
+
+    if opts[:auto], do: Process.put(:kino_auto, true)
 
     cond do
       opts[:raw] ->
@@ -192,7 +205,7 @@ defmodule KinoTheatre.CLI do
   defp watch_args(argv) do
     {opts, args, invalid} =
       OptionParser.parse(argv,
-        strict: [backend: :string, limit: :integer, raw: :boolean]
+        strict: [backend: :string, limit: :integer, raw: :boolean, auto: :boolean]
       )
 
     check_invalid(invalid)
@@ -421,7 +434,7 @@ defmodule KinoTheatre.CLI do
     titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
     items = if more?, do: titles ++ [:more], else: titles
 
-    case pick(items, &describe_title_item/1, featured_header(type)) do
+    case pick(items, &describe_title_item/1, featured_header(type), &title_poster/1) do
       :more -> pick_featured(type, page + 1, titles)
       other -> other
     end
@@ -505,12 +518,15 @@ defmodule KinoTheatre.CLI do
           "what to watch? (#{length(titles)} results" <>
             if(more?, do: ", more available)", else: ", all shown)")
 
-        case pick(items, &describe_title_item/1, header) do
+        case pick(items, &describe_title_item/1, header, &title_poster/1) do
           :more -> pick_title(q, year, page + 1, titles)
           other -> other
         end
     end
   end
+
+  defp title_poster(:more), do: nil
+  defp title_poster(title), do: title.poster
 
   # Exact-title matches first (newest first — a remake outranks the original),
   # then the rest by TMDB popularity. A requested year trumps both, softly
@@ -603,6 +619,39 @@ defmodule KinoTheatre.CLI do
   end
 
   defp probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task) do
+    if Process.get(:kino_auto) do
+      auto_play(sources, rd_opts, ctx)
+    else
+      do_probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task)
+    end
+  end
+
+  # --auto: no source picker — walk the ranked list and play the first
+  # source that actually resolves (RD.resolve_best stops at the first hit,
+  # so nothing beyond it is probed).
+  defp auto_play(sources, rd_opts, ctx) do
+    sub_task = if Process.get(:kino_mode, :play) == :play, do: start_subtitle_task(ctx)
+    IO.puts(:stderr, "auto — trying sources best-first…")
+
+    notify = fn
+      {:trying, name} ->
+        IO.puts(:stderr, "  → #{String.slice(name, 0, 70)}")
+
+      {:skipped, name, reason} ->
+        IO.puts(:stderr, "  ✗ #{String.slice(name, 0, 55)} — #{unplayable_reason(reason)}")
+    end
+
+    case RD.resolve_best(sources, Keyword.put(rd_opts, :notify, notify)) do
+      {:ok, stream, source, _skipped} ->
+        finish_play(ctx, source, stream, sub_task)
+
+      {:error, {:all_failed, _skipped}} ->
+        if sub_task, do: Task.shutdown(sub_task, :brutal_kill)
+        die("no playable sources — try again without --auto to see the full list")
+    end
+  end
+
+  defp do_probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task) do
     # Fetch subtitles in the background while sources are being probed, so
     # the network round-trips overlap instead of delaying the mpv launch.
     sub_task = sub_task || start_subtitle_task(ctx)
@@ -648,10 +697,52 @@ defmodule KinoTheatre.CLI do
             probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
 
           {source, stream} ->
-            Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
-            save_resume(ctx, source)
-            IO.puts(:stderr, "playing in mpv: #{stream.filename}")
+            finish_play(ctx, source, stream, sub_task)
         end
+    end
+  end
+
+  defp finish_play(ctx, source, stream, sub_task) do
+    case Process.get(:kino_mode, :play) do
+      :download ->
+        if sub_task, do: Task.shutdown(sub_task, :brutal_kill)
+        download_stream(stream)
+
+      :play ->
+        Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
+        save_resume(ctx, source)
+        IO.puts(:stderr, "playing in mpv: #{stream.filename}")
+    end
+  end
+
+  # RD hands us a plain HTTPS URL, so downloading is just curl with resume
+  # support; its progress bar renders on stderr.
+  defp download_stream(stream) do
+    dir =
+      Application.get_env(:kino_app, :download_dir) ||
+        Path.join(System.user_home!(), "Videos")
+
+    File.mkdir_p!(dir)
+    dest = Path.join(dir, stream.filename)
+
+    size =
+      case stream.filesize do
+        n when is_integer(n) and n > 0 -> " (#{Float.round(n / 1.0e9, 2)} GB)"
+        _ -> ""
+      end
+
+    IO.puts(:stderr, "downloading #{stream.filename}#{size} → #{dest}")
+
+    case System.cmd(
+           "curl",
+           ["-L", "--fail", "--retry", "3", "-C", "-", "--progress-bar", "-o", dest, stream.url]
+         ) do
+      {_, 0} ->
+        IO.puts(:stderr, "✔ saved to #{dest}")
+        IO.puts(Jason.encode!(%{downloaded: dest}))
+
+      {_, code} ->
+        die("download failed (curl exit #{code}) — partial file kept, rerun to resume")
     end
   end
 
@@ -764,6 +855,7 @@ defmodule KinoTheatre.CLI do
 
   defp unplayable_reason({:not_cached, _status, _progress}), do: "not cached on Real-Debrid"
   defp unplayable_reason(:known_blocked), do: "blocked (known DMCA takedown)"
+  defp unplayable_reason(:infringing), do: "infringing — taken down"
   defp unplayable_reason({:rd, 451, _}), do: "infringing — taken down"
   defp unplayable_reason(:no_video_files), do: "no video file in the torrent"
   defp unplayable_reason(:magnet_error), do: "bad magnet link"
@@ -899,17 +991,39 @@ defmodule KinoTheatre.CLI do
 
   # Let the user pick an item: fzf when available (arrows + fuzzy filter),
   # else a numbered prompt. Returns the chosen item, or nil on cancel.
-  defp pick(items, describe, header) do
+  # `preview` maps an item to an image URL (or nil) — rendered next to the
+  # list via chafa when both chafa and a URL are available.
+  defp pick(items, describe, header, preview \\ nil) do
     if System.find_executable("fzf"),
-      do: pick_fzf(items, describe, header),
+      do: pick_fzf(items, describe, header, preview),
       else: pick_number(items, describe, header)
   end
 
-  defp pick_fzf(items, describe, header) do
+  # Runs inside fzf's preview pane: {2} is the poster URL column. Downloads
+  # once into a tmp cache, renders with chafa sized to the pane.
+  @poster_preview ~S"""
+  url={2}; if [ "$url" = "-" ]; then echo; else f="${TMPDIR:-/tmp}/kino-poster-$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
+  """ |> String.trim()
+
+  defp pick_fzf(items, describe, header, preview) do
+    preview? = preview != nil and System.find_executable("chafa") != nil
+
     list =
       items
       |> Enum.with_index()
-      |> Enum.map_join("\n", fn {item, i} -> "#{i}\t#{describe.(item)}" end)
+      |> Enum.map_join("\n", fn {item, i} ->
+        if preview?,
+          do: "#{i}\t#{preview.(item) || "-"}\t#{describe.(item)}",
+          else: "#{i}\t#{describe.(item)}"
+      end)
+
+    fzf =
+      if preview? do
+        ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse --height=~90% ) <>
+          ~s(--header="$2" --preview-window=right,28%,border-left --preview '#{@poster_preview}' < "$1")
+      else
+        ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% --header="$2" < "$1")
+      end
 
     path = Path.join(System.tmp_dir!(), "kino-fzf-#{System.os_time(:millisecond)}")
     File.write!(path, list)
@@ -917,16 +1031,7 @@ defmodule KinoTheatre.CLI do
     try do
       # fzf draws its UI on /dev/tty, reads the list from the redirected file,
       # and prints the chosen line on stdout — safe to run under System.cmd.
-      case System.cmd(
-             "sh",
-             [
-               "-c",
-               ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% --header="$2" < "$1"),
-               "sh",
-               path,
-               header
-             ]
-           ) do
+      case System.cmd("sh", ["-c", fzf, "sh", path, header]) do
         {line, 0} ->
           {i, _} = line |> String.trim() |> Integer.parse()
           Enum.at(items, i)
@@ -1119,7 +1224,8 @@ defmodule KinoTheatre.CLI do
 
     usage:
       kino                   open the interactive menu (Continue / Featured / Search)
-      kino watch "<title>"   [--raw] [--backend apibay|nyaa|anime] [--limit N]
+      kino watch "<title>"   [--auto] [--raw] [--backend apibay|nyaa|anime] [--limit N]
+      kino download "<title>" same flow as watch, but saves the file (KINO_DOWNLOAD_DIR)
       kino featured          browse what's trending on TMDB and pick something
       kino continue          resume what you were watching
       kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]

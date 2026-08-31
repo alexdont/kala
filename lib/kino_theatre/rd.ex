@@ -195,7 +195,8 @@ defmodule KinoTheatre.RD do
   """
   def resolve_best(sources, opts \\ []) do
     notify = Keyword.get(opts, :notify, fn _ -> :ok end)
-    do_resolve_best(sources, notify, [])
+    resolve_opts = [patience: 5] ++ Keyword.take(opts, [:episode, :season])
+    do_resolve_best(sources, notify, resolve_opts, [])
   end
 
   @doc """
@@ -245,29 +246,30 @@ defmodule KinoTheatre.RD do
     :ok
   end
 
-  defp do_resolve_best([], _notify, skipped), do: {:error, {:all_failed, Enum.reverse(skipped)}}
+  defp do_resolve_best([], _notify, _resolve_opts, skipped),
+    do: {:error, {:all_failed, Enum.reverse(skipped)}}
 
-  defp do_resolve_best([source | rest], notify, skipped) do
+  defp do_resolve_best([source | rest], notify, resolve_opts, skipped) do
     cond do
       KinoTheatre.Blocklist.blocked?(source.hash) ->
         notify.({:skipped, source.name, :known_blocked})
-        do_resolve_best(rest, notify, [{source.name, :known_blocked} | skipped])
+        do_resolve_best(rest, notify, resolve_opts, [{source.name, :known_blocked} | skipped])
 
       true ->
         notify.({:trying, source.name})
 
-        case resolve_magnet(source.magnet, patience: 5) do
+        case resolve_magnet(source.magnet, resolve_opts) do
           {:ok, stream} ->
             {:ok, stream, source, Enum.reverse(skipped)}
 
           {:error, {:rd, 451, _}} ->
             KinoTheatre.Blocklist.block(source.hash)
             notify.({:skipped, source.name, :infringing})
-            do_resolve_best(rest, notify, [{source.name, :infringing} | skipped])
+            do_resolve_best(rest, notify, resolve_opts, [{source.name, :infringing} | skipped])
 
           {:error, reason} ->
             notify.({:skipped, source.name, reason})
-            do_resolve_best(rest, notify, [{source.name, reason} | skipped])
+            do_resolve_best(rest, notify, resolve_opts, [{source.name, reason} | skipped])
         end
     end
   end

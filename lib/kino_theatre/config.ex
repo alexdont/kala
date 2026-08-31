@@ -14,6 +14,8 @@ defmodule KinoTheatre.Config do
     "TMDB_API_KEY" => :tmdb_key,
     "KINO_LANG" => :lang,
     "KINO_SUBS" => :subs_lang,
+    "KINO_MPV_ARGS" => :mpv_args,
+    "KINO_DOWNLOAD_DIR" => :download_dir,
     "OPENSUBTITLES_API_KEY" => :opensubtitles_api_key,
     "OPENSUBTITLES_USERNAME" => :opensubtitles_username,
     "OPENSUBTITLES_PASSWORD" => :opensubtitles_password,

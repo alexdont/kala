@@ -12,6 +12,19 @@ defmodule KinoTheatre.Player do
   # Friendly name -> macOS application bundle, for `open -a`.
   @gui %{vlc: "VLC", iina: "IINA"}
 
+  # Low-RAM defaults, per the project goal (~200 MB while watching):
+  # mpv's stock demuxer cache is 150+50 MiB and balloons on high-bitrate
+  # remuxes; ~100 MiB of buffer is plenty over a debrid HTTPS stream.
+  # Decoder threads default to the core count and each adds frame buffers.
+  # hwdec=auto-safe offloads decode to the GPU when safely available.
+  # Users override or extend via KINO_MPV_ARGS (later args win in mpv).
+  @mpv_defaults [
+    "--demuxer-max-bytes=64MiB",
+    "--demuxer-max-back-bytes=32MiB",
+    "--vd-lavc-threads=4",
+    "--hwdec=auto-safe"
+  ]
+
   @doc """
   Open `url` in the given player (`:vlc`, `:iina`, or `:mpv`). For mpv,
   `extra_args` are passed before the URL (e.g. `--sub-file=<path>`).
@@ -24,11 +37,18 @@ defmodule KinoTheatre.Player do
         {:error, "mpv is not installed or not on the server's PATH"}
 
       bin ->
+        user_args =
+          case Application.get_env(:kino_app, :mpv_args) do
+            args when is_binary(args) -> String.split(args, ~r/\s+/, trim: true)
+            _ -> []
+          end
+
         # `&` backgrounds mpv inside sh so this returns immediately; every
         # argument is positional ("$@"), so nothing is parsed by the shell.
         System.cmd(
           "sh",
-          ["-c", ~s("$@" >/dev/null 2>&1 &), "sh", bin] ++ extra_args ++ [url]
+          ["-c", ~s("$@" >/dev/null 2>&1 &), "sh", bin] ++
+            @mpv_defaults ++ user_args ++ extra_args ++ [url]
         )
 
         :ok
