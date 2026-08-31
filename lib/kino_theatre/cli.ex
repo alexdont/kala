@@ -31,6 +31,7 @@ defmodule KinoTheatre.CLI do
 
   defp main_menu do
     IO.puts(:stderr, greeting())
+    print_update_status()
 
     items = [
       {:continue, "▶ Continue — pick up where you left off"},
@@ -43,6 +44,31 @@ defmodule KinoTheatre.CLI do
       {:continue, _} -> continue()
       {:featured, _} -> featured()
       {:search, _} -> menu_search()
+    end
+  end
+
+  # Version line under the greeting. Capped at 2s and silent on any failure
+  # so the menu never waits on GitHub; the result is cached between launches.
+  defp print_update_status do
+    task = Task.async(fn -> KinoTheatre.UpdateCheck.status() end)
+
+    case Task.yield(task, 2000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:current, version}} ->
+        IO.puts(:stderr, IO.ANSI.format([:faint, "  v#{version} — up to date\n", :reset]))
+
+      {:ok, {:update, current, latest}} ->
+        IO.puts(
+          :stderr,
+          IO.ANSI.format([
+            :yellow,
+            "  ⬆ v#{current} → v#{latest} available: ",
+            :reset,
+            "https://github.com/alexdont/kino/releases/latest\n"
+          ])
+        )
+
+      _ ->
+        :ok
     end
   end
 
