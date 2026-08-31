@@ -23,6 +23,17 @@ defmodule KinoTheatre.Tmdb do
     end
   end
 
+  @doc """
+  Trending movies or TV shows this week — `type` is `"movie"` or `"tv"`.
+  Returns `{:ok, results, more?}` like `search/2`.
+  """
+  def trending(type, page \\ 1) when type in ~w(movie tv) do
+    with {:ok, %{"results" => results} = body} <- get("/trending/#{type}/week", page: page) do
+      {:ok, Enum.map(results, &normalize(Map.put(&1, "media_type", type))),
+       page < (body["total_pages"] || 1)}
+    end
+  end
+
   # Append external_ids so `imdb_id/1` works for both movies (top-level imdb_id)
   # and TV (external_ids.imdb_id) — used to query Torrentio for more sources.
   def movie(id), do: get("/movie/#{id}", append_to_response: "external_ids")

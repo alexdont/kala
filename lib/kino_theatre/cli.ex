@@ -15,6 +15,7 @@ defmodule KinoTheatre.CLI do
     case argv do
       ["search" | rest] -> search(rest)
       ["watch" | rest] -> watch(rest)
+      ["featured" | _] -> featured()
       ["continue" | _] -> continue()
       ["resolve" | rest] -> resolve(rest)
       ["play" | rest] -> play(rest)
@@ -128,7 +129,11 @@ defmodule KinoTheatre.CLI do
     # and use it to rank instead (soft, ±1: release dates shift).
     {q, year} = split_year(query)
     title = pick_title(q, year, 1, []) || System.halt(0)
+    play_title(title)
+  end
 
+  # Everything downstream of "which title": details → (episodes) → sources.
+  defp play_title(title) do
     details =
       case fetch_details(title) do
         {:ok, details} -> details
@@ -176,6 +181,45 @@ defmodule KinoTheatre.CLI do
 
   defp rd_opts(season, episode) do
     Enum.reject([season: season, episode: episode], fn {_k, v} -> is_nil(v) end)
+  end
+
+  # ── featured (trending on TMDB) ───────────────────────────────────
+
+  defp featured do
+    unless RD.configured?() do
+      die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
+    end
+
+    unless Tmdb.configured?() do
+      die("featured needs TMDB_API_KEY — add it to #{Config.path()} or the environment")
+    end
+
+    type =
+      case pick(["movies", "shows"], &String.capitalize/1, "what are you in the mood for?") do
+        "movies" -> "movie"
+        "shows" -> "tv"
+        nil -> System.halt(0)
+      end
+
+    title = pick_featured(type, 1, []) || System.halt(0)
+    play_title(title)
+  end
+
+  defp pick_featured(type, page, acc) do
+    {results, more?} =
+      case Tmdb.trending(type, page) do
+        {:ok, results, more?} -> {results, more?}
+        {:error, reason} -> die("TMDB trending failed: #{inspect(reason)}")
+      end
+
+    titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
+    items = if more?, do: titles ++ [:more], else: titles
+    label = if type == "movie", do: "movies", else: "shows"
+
+    case pick(items, &describe_title_item/1, "trending #{label} this week") do
+      :more -> pick_featured(type, page + 1, titles)
+      other -> other
+    end
   end
 
   defp split_year(query) do
@@ -684,6 +728,7 @@ defmodule KinoTheatre.CLI do
 
     usage:
       kino watch "<title>"   [--raw] [--backend apibay|nyaa|anime] [--limit N]
+      kino featured          browse what's trending on TMDB and pick something
       kino continue          resume what you were watching
       kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]
       kino resolve <magnet>  [--season N] [--episode N]
