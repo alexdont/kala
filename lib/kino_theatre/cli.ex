@@ -1002,8 +1002,30 @@ defmodule KinoTheatre.CLI do
   # Runs inside fzf's preview pane: {2} is the poster URL column. Downloads
   # once into a tmp cache, renders with chafa sized to the pane.
   @poster_preview ~S"""
-  url={2}; if [ "$url" = "-" ]; then echo; else f="${TMPDIR:-/tmp}/kino-poster-$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa CHAFA_OPTS --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
+  url={2}; if [ "$url" = "-" ]; then echo; else d="${TMPDIR:-/tmp}/kino-posters"; mkdir -p "$d"; f="$d/$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa CHAFA_OPTS --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
   """ |> String.trim()
+
+  @poster_cache_max_age_s 30 * 24 * 3600
+
+  defp prune_posters do
+    dir = Path.join(System.tmp_dir!(), "kino-posters")
+    cutoff = System.os_time(:second) - @poster_cache_max_age_s
+
+    case File.ls(dir) do
+      {:ok, names} ->
+        for name <- names,
+            path = Path.join(dir, name),
+            {:ok, %{mtime: mtime}} <- [File.stat(path, time: :posix)],
+            mtime < cutoff do
+          File.rm(path)
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
 
   # Inside fzf's preview pipe chafa can't auto-detect terminal graphics, so
   # it silently degrades to colored block characters. Force the pixel
@@ -1025,6 +1047,7 @@ defmodule KinoTheatre.CLI do
 
   defp pick_fzf(items, describe, header, preview) do
     preview? = preview != nil and System.find_executable("chafa") != nil
+    if preview?, do: prune_posters()
 
     list =
       items
