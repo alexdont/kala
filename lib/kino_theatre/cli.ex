@@ -7,7 +7,7 @@ defmodule KinoTheatre.CLI do
   a human-readable listing instead.
   """
 
-  alias KinoTheatre.{Config, Player, RD, Sources, Tmdb}
+  alias KinoTheatre.{Config, Kitsu, Player, RD, Sources, Tmdb}
 
   @backends %{"apibay" => :apibay, "nyaa" => :nyaa, "anime" => :anime}
 
@@ -140,6 +140,14 @@ defmodule KinoTheatre.CLI do
         {:error, reason} -> die("TMDB lookup failed: #{inspect(reason)}")
       end
 
+    if anime?(details) do
+      play_anime(title, details)
+    else
+      play_standard(title, details)
+    end
+  end
+
+  defp play_standard(title, details) do
     imdb = Tmdb.imdb_id(details)
 
     {season, episode} =
@@ -160,6 +168,97 @@ defmodule KinoTheatre.CLI do
     title.type
     |> title_sources(title.title, title.year, imdb, season, episode)
     |> probe_and_pick(rd_opts(season, episode), ctx)
+  end
+
+  # ── anime ─────────────────────────────────────────────────────────
+  # Anime lives on different trackers (Nyaa/AnimeTosho), uses absolute episode
+  # numbers (no seasons), and matches best by AniDB id — so route it through
+  # Kitsu instead of the live-action season/episode flow.
+
+  defp anime?(%{"original_language" => "ja", "genres" => genres}) when is_list(genres),
+    do: Enum.any?(genres, &(&1["id"] == 16))
+
+  defp anime?(_details), do: false
+
+  defp play_anime(title, details) do
+    IO.puts(:stderr, "anime — matching on Kitsu for episode list + AniDB id…")
+    kitsu = kitsu_lookup(title.title)
+    search_title = (kitsu.anime && kitsu.anime.title) || title.title
+
+    case {title.type, kitsu.episodes} do
+      {"movie", _} ->
+        ctx = anime_ctx(title, details, nil)
+        q = Sources.anime_movie_query(search_title)
+
+        case Sources.search(q, backend: :anime) do
+          {:ok, sources} -> with_library(q, sources) |> probe_and_pick([], ctx)
+          {:error, reason} -> die("anime source search failed: #{inspect(reason)}")
+        end
+
+      {"tv", []} ->
+        # Not on Kitsu (or no episodes listed) — the live-action flow still
+        # works via Torrentio's IMDb-id lookup.
+        IO.puts(:stderr, "not matched on Kitsu — falling back to the standard flow")
+        play_standard(title, details)
+
+      {"tv", episodes} ->
+        episode = pick(episodes, &describe_anime_episode/1, "which episode?") || System.halt(0)
+        n = episode.number
+        sources = anime_episode_sources(search_title, n, kitsu.anidb)
+        q = Sources.anime_episode_query(search_title, n)
+
+        with_library(q, sources)
+        |> probe_and_pick([episode: n], anime_ctx(title, details, n))
+    end
+  end
+
+  defp anime_ctx(title, details, episode) do
+    %{
+      type: title.type,
+      tmdb_id: title.id,
+      title: title.title,
+      season: nil,
+      episode: episode,
+      poster_path: details["poster_path"]
+    }
+  end
+
+  defp kitsu_lookup(name) do
+    case Kitsu.search(name) do
+      {:ok, [anime | _]} ->
+        anidb =
+          case Kitsu.anidb_id(anime.id) do
+            {:ok, id} -> id
+            _ -> nil
+          end
+
+        %{anime: anime, episodes: kitsu_episode_list(anime), anidb: anidb}
+
+      _ ->
+        %{anime: nil, episodes: [], anidb: nil}
+    end
+  end
+
+  defp kitsu_episode_list(%{episode_count: count}) when is_integer(count) and count > 0,
+    do: Enum.map(1..count, &%{number: &1, name: nil})
+
+  defp kitsu_episode_list(anime) do
+    {:ok, episodes} = Kitsu.episodes(anime.id)
+    episodes
+  end
+
+  # Returns episode-specific releases first, then the show's batch packs
+  # (either can contain the episode; RD's file picker extracts it).
+  defp anime_episode_sources(search_title, episode, anidb) do
+    case Sources.anime_episode_search(search_title, episode, anidb_id: anidb) do
+      {:ok, sources, _scope} -> sources
+      {:error, reason} -> die("anime source search failed: #{inspect(reason)}")
+    end
+  end
+
+  defp describe_anime_episode(ep) do
+    name = Map.get(ep, :name)
+    "E#{pad2(ep.number)}#{if name in [nil, ""], do: "", else: " #{name}"}"
   end
 
   defp title_sources("movie", name, year, imdb, _season, _episode) do
@@ -548,9 +647,29 @@ defmodule KinoTheatre.CLI do
       poster_path: entry["poster_path"]
     }
 
-    type
-    |> title_sources(name, year, Tmdb.imdb_id(details), entry["season"], entry["episode"])
-    |> probe_and_pick(rd_opts, ctx)
+    cond do
+      anime?(details) and type == "tv" and is_integer(entry["episode"]) ->
+        kitsu = kitsu_lookup(name)
+        search_title = (kitsu.anime && kitsu.anime.title) || name
+        n = entry["episode"]
+
+        Sources.anime_episode_query(search_title, n)
+        |> with_library(anime_episode_sources(search_title, n, kitsu.anidb))
+        |> probe_and_pick([episode: n], ctx)
+
+      anime?(details) and type == "movie" ->
+        q = Sources.anime_movie_query(name)
+
+        case Sources.search(q, backend: :anime) do
+          {:ok, sources} -> with_library(q, sources) |> probe_and_pick([], ctx)
+          {:error, reason} -> die("anime source search failed: #{inspect(reason)}")
+        end
+
+      true ->
+        type
+        |> title_sources(name, year, Tmdb.imdb_id(details), entry["season"], entry["episode"])
+        |> probe_and_pick(rd_opts, ctx)
+    end
   end
 
   defp describe_resume(entry) do
