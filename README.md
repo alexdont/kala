@@ -33,8 +33,11 @@ widget library.)
   provider-confirmed-cached next, then resolution tier with bigger files
   first. Releases in languages other than yours sink to the bottom
   (`KINO_LANG`, default English; dual-audio stays).
-- **Continue watching**: `kino continue` jumps back to the exact episode and
-  source you last played.
+- **Continue watching**: `kino continue` jumps back to the exact episode,
+  source, **and second** you left off at — the position is checkpointed every
+  5 seconds while mpv plays, so it survives player crashes and power loss.
+  It's remembered per title/episode, not per stream, so switching to a
+  different source resumes from the same spot.
 - **Scriptable**: `kino search`/`resolve`/`play` emit JSON when piped, so the
   interactive flow is just one frontend — overlays and scripts are another.
 

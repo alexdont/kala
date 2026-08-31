@@ -556,10 +556,26 @@ defmodule KinoTheatre.CLI do
             probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
 
           {source, stream} ->
-            Player.open(:mpv, stream.url, await_subtitles(sub_task))
+            Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
             save_resume(ctx, source)
             IO.puts(:stderr, "playing in mpv: #{stream.filename}")
         end
+    end
+  end
+
+  # Position tracking + exact resume: mpv gets a tiny Lua script that saves
+  # the playback position every 5s (crash-safe), keyed by title+episode so
+  # switching sources resumes from the same spot.
+  defp position_args(nil), do: []
+
+  defp position_args(ctx) do
+    case KinoTheatre.Position.mpv_args(ctx) do
+      {args, nil} ->
+        args
+
+      {args, resume_at} ->
+        IO.puts(:stderr, "resuming from #{resume_at}")
+        args
     end
   end
 
@@ -692,11 +708,12 @@ defmodule KinoTheatre.CLI do
     IO.puts(:stderr, "trying the source you last played: #{source["name"]}")
 
     # Subtitles fetch in the background while RD resolves.
-    sub_task = start_subtitle_task(entry_ctx(entry))
+    ctx = entry_ctx(entry)
+    sub_task = start_subtitle_task(ctx)
 
     case RD.resolve_magnet(source["magnet"], rd_opts) do
       {:ok, stream} ->
-        Player.open(:mpv, stream.url, await_subtitles(sub_task))
+        Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
         KinoTheatre.Resume.put(
           entry["type"],
           entry["tmdb_id"],
@@ -779,7 +796,13 @@ defmodule KinoTheatre.CLI do
           ""
       end
 
-    "#{entry["title"]}#{ep} · last: #{String.slice(get_in(entry, ["source", "name"]) || "?", 0, 45)}"
+    at =
+      case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+        nil -> ""
+        time -> " · at #{time}"
+      end
+
+    "#{entry["title"]}#{ep}#{at} · last: #{String.slice(get_in(entry, ["source", "name"]) || "?", 0, 45)}"
   end
 
   # Let the user pick an item: fzf when available (arrows + fuzzy filter),
