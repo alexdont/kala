@@ -137,7 +137,7 @@ defmodule KinoTheatre.CLI do
     details =
       case fetch_details(title) do
         {:ok, details} -> details
-        {:error, reason} -> die("TMDB lookup failed: #{inspect(reason)}")
+        {:error, reason} -> die(tmdb_error(reason))
       end
 
     if anime?(details) do
@@ -310,7 +310,7 @@ defmodule KinoTheatre.CLI do
     {results, more?} =
       case Tmdb.trending(type, page) do
         {:ok, results, more?} -> {results, more?}
-        {:error, reason} -> die("TMDB trending failed: #{inspect(reason)}")
+        {:error, reason} -> die(tmdb_error(reason))
       end
 
     titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
@@ -370,7 +370,7 @@ defmodule KinoTheatre.CLI do
       |> Enum.map(fn variant ->
         case Tmdb.search(variant, page) do
           {:ok, results, more?} -> {results, more?}
-          {:error, reason} -> die("TMDB search failed: #{inspect(reason)}")
+          {:error, reason} -> die(tmdb_error(reason))
         end
       end)
       |> then(fn pages ->
@@ -443,7 +443,7 @@ defmodule KinoTheatre.CLI do
       case Tmdb.season(details["id"], season_number) do
         {:ok, %{"episodes" => episodes}} when episodes != [] -> episodes
         {:ok, _} -> die("TMDB lists no episodes for season #{season_number}")
-        {:error, reason} -> die("TMDB season lookup failed: #{inspect(reason)}")
+        {:error, reason} -> die(tmdb_error(reason))
       end
 
     episode = pick(episodes, &describe_episode/1, "which episode?") || System.halt(0)
@@ -575,6 +575,11 @@ defmodule KinoTheatre.CLI do
     end
   end
 
+  defp tmdb_error({:tmdb, 401, _}),
+    do: "TMDB rejected the key (401) — check TMDB_API_KEY in #{Config.path()}"
+
+  defp tmdb_error(reason), do: "TMDB request failed: #{inspect(reason)}"
+
   defp sub_reason(:not_found), do: "none found for this title"
   defp sub_reason(:no_file), do: "no file for this episode/language"
   defp sub_reason(:opensubtitles_needs_login), do: "OpenSubtitles download needs username+password"
@@ -625,6 +630,9 @@ defmodule KinoTheatre.CLI do
 
   defp unplayable_reason({:torrent_status, status}), do: "RD download failed (#{status})"
   defp unplayable_reason({:download_timeout, pct}), do: "RD download timed out at #{pct}%"
+  defp unplayable_reason({:rd, 401, _}),
+    do: "Real-Debrid rejected the token (401) — check RD_TOKEN"
+
   defp unplayable_reason({:rd, status, _}), do: "Real-Debrid error #{status}"
   defp unplayable_reason(reason), do: inspect(reason)
 
@@ -678,10 +686,15 @@ defmodule KinoTheatre.CLI do
   defp continue_fallback(entry, rd_opts) do
     type = entry["type"]
 
+    unless Tmdb.configured?() do
+      die("the saved source is gone, and searching for a fresh one needs " <>
+        "TMDB_API_KEY — add it to #{Config.path()} or the environment")
+    end
+
     details =
       case fetch_details(%{type: type, id: entry["tmdb_id"]}) do
         {:ok, details} -> details
-        {:error, reason} -> die("TMDB lookup failed: #{inspect(reason)}")
+        {:error, reason} -> die(tmdb_error(reason))
       end
 
     name = details["title"] || details["name"] || entry["title"]
@@ -869,6 +882,10 @@ defmodule KinoTheatre.CLI do
 
   defp die_resolve({:not_cached, status, progress}) do
     die(%{error: "not cached on Real-Debrid", status: status, progress: progress})
+  end
+
+  defp die_resolve({:rd, 401, _}) do
+    die("Real-Debrid rejected the token (401) — check RD_TOKEN in #{Config.path()}")
   end
 
   defp die_resolve(reason), do: die("resolve failed: #{inspect(reason)}")
