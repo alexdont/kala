@@ -30,18 +30,46 @@ defmodule KinoTheatre.CLI do
   # ── main menu (bare `kino` at a terminal) ─────────────────────────
 
   defp main_menu do
+    IO.puts(:stderr, greeting())
+
     items = [
-      {:continue, "Continue — resume what you were watching"},
-      {:featured, "Featured — trending movies, shows & anime"},
-      {:search, "Search — find something by name"}
+      {:continue, "▶ Continue — pick up where you left off"},
+      {:featured, "★ Featured — trending movies, shows & anime"},
+      {:search, "⌕ Search — find something by name"}
     ]
 
-    case pick(items, fn {_action, label} -> label end, "kino") do
+    case pick(items, fn {_action, label} -> label end, "↑↓ to move · enter to select · esc to quit") do
       nil -> System.halt(0)
       {:continue, _} -> continue()
       {:featured, _} -> featured()
       {:search, _} -> menu_search()
     end
+  end
+
+  defp greeting do
+    user = System.get_env("USER") || System.get_env("USERNAME") || "you"
+
+    {_, {hour, _, _}} = :calendar.local_time()
+
+    hello =
+      cond do
+        hour < 5 -> "up late"
+        hour < 12 -> "good morning"
+        hour < 18 -> "good afternoon"
+        true -> "good evening"
+      end
+
+    IO.ANSI.format([
+      "\n  🍿 ",
+      :bright,
+      "kino",
+      :reset,
+      " — #{hello}, ",
+      :cyan,
+      user,
+      :reset,
+      "! what are we watching?\n"
+    ])
   end
 
   defp menu_search do
