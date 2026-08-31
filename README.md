@@ -40,14 +40,32 @@ widget library.)
 
 ## Install
 
-Grab the binary for your platform from the releases page and put it on your
-`PATH`, or build from source:
+The binaries are self-contained — no Erlang, no Elixir, nothing to add to a
+project. You just need **mpv** for playback (`fzf` is optional but makes the
+pickers much nicer).
+
+**Linux (x86_64):**
 
 ```sh
-# runtime needs: mpv (playback), fzf (optional, nicer pickers)
+sudo pacman -S --needed mpv fzf   # or your distro's equivalent
+curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_linux_x86_64
+chmod +x kino && mkdir -p ~/.local/bin && mv kino ~/.local/bin/
+```
+
+**macOS (Apple Silicon)** — untested build, feedback welcome:
+
+```sh
+brew install mpv fzf
+curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_macos_aarch64
+chmod +x kino && mv kino /usr/local/bin/
+```
+
+**From source** (needs Elixir; zig + p7zip only for the standalone build):
+
+```sh
 mix deps.get
-mix escript.build          # → ./kino (needs Erlang installed)
-MIX_ENV=prod mix release   # → burrito_out/kino_* (self-contained, no Erlang)
+mix escript.build               # → ./kino (needs Erlang installed to run)
+MIX_ENV=prod mix release kino   # → burrito_out/kino_* (self-contained)
 ```
 
 ## Configure
