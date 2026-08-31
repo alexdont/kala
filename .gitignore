@@ -24,3 +24,4 @@ kino_app-*.tar
 
 kino
 /deps/
+/burrito_out/
