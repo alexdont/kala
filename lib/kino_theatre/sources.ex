@@ -583,7 +583,7 @@ defmodule KinoTheatre.Sources do
   end
 
   defp lang_penalty(source) do
-    preferred = Application.get_env(:kino_app, :lang) || "en"
+    preferred = KinoTheatre.Config.lang()
 
     case Map.get(source, :lang) do
       nil -> 0

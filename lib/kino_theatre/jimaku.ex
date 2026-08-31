@@ -43,33 +43,36 @@ defmodule KinoTheatre.Jimaku do
 
   # English is unreliable by filename — romaji-named files are often Japanese
   # "raws" (e.g. [NanakoRaws]). Verify by actually fetching content and checking
-  # the Japanese-character ratio; return the first genuinely non-Japanese file.
+  # the Japanese-character ratio; return the first genuinely non-Japanese file,
+  # carrying the fetched body so the caller doesn't download it again.
   defp pick(files, :english) do
     files
     |> Enum.reject(&japanese_named?/1)
     |> Enum.filter(&subtitle_named?/1)
     |> Enum.find_value({:error, :no_file}, fn file ->
       case classify_by_content(file["url"]) do
-        :english -> {:ok, to_result(file)}
+        {:english, body} -> {:ok, to_result(file, body)}
         _ -> nil
       end
     end)
   end
 
-  defp to_result(file), do: %{name: file["name"], url: file["url"]}
+  defp to_result(file, body \\ nil), do: %{name: file["name"], url: file["url"], body: body}
 
   defp japanese_named?(%{"name" => name}) do
     String.contains?(name, ".ja") or String.match?(name, ~r/[\x{3040}-\x{30ff}\x{4e00}-\x{9fff}]/u)
   end
 
-  defp subtitle_named?(%{"name" => name}), do: String.match?(String.downcase(name), ~r/\.(srt|ass|vtt|ssa)$/)
+  defp subtitle_named?(%{"name" => name}), do: KinoTheatre.Subtitles.subtitle_filename?(name)
 
   # Download the file and classify by its *dialogue* text (ignoring the .ass
   # header, whose field names are Latin and would masquerade as English).
+  # Returns `{classification, body}` so the winning file's content can be
+  # reused instead of downloaded a second time.
   defp classify_by_content(url) do
     case Req.get(Req.new(url: url, receive_timeout: 15_000, retry: :transient, max_retries: 1)) do
-      {:ok, %{status: 200, body: body}} when is_binary(body) -> classify(dialogue_text(body))
-      _ -> :unknown
+      {:ok, %{status: 200, body: body}} when is_binary(body) -> {classify(dialogue_text(body)), body}
+      _ -> {:unknown, nil}
     end
   end
 

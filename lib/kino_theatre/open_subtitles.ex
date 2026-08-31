@@ -37,8 +37,13 @@ defmodule KinoTheatre.OpenSubtitles do
   def download_srt(file_id) do
     with {:ok, token} <- token(),
          {:ok, link} <- request_link(file_id, token),
-         {:ok, %{status: 200, body: srt}} <- Req.get(Req.new(url: link, receive_timeout: 20_000)) do
+         {:ok, %{status: 200, body: srt}} when is_binary(srt) <-
+           Req.get(Req.new(url: link, receive_timeout: 20_000, decode_body: false)) do
       {:ok, srt}
+    else
+      {:ok, %{status: status}} -> {:error, {:opensubtitles_download, status}}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:opensubtitles_download, other}}
     end
   end
 

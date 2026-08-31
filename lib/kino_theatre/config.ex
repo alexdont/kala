@@ -39,6 +39,31 @@ defmodule KinoTheatre.Config do
     :ok
   end
 
+  @doc "Preferred audio language for source ranking (KINO_LANG), default \"en\"."
+  def lang, do: Application.get_env(:kino_app, :lang) || "en"
+
+  @doc """
+  Subtitle language (KINO_SUBS): the normalized language code, or `nil` when
+  disabled ("off"/"none", any case). Defaults to "en" — deliberately NOT
+  KINO_LANG, which is an *audio* ranking preference (a ja-audio fan usually
+  still wants English subs unless they say otherwise).
+  """
+  def subs_lang do
+    case Application.get_env(:kino_app, :subs_lang) do
+      nil ->
+        "en"
+
+      value ->
+        case value |> String.trim() |> String.downcase() do
+          off when off in ["off", "none", ""] -> nil
+          lang -> lang
+        end
+    end
+  end
+
+  @doc "True when the user explicitly set KINO_SUBS."
+  def subs_explicit?, do: Application.get_env(:kino_app, :subs_lang) != nil
+
   @doc "Which keys are configured (by env-var name), for `kino config`."
   def status do
     for {env_key, app_key} <- @keys, into: %{} do

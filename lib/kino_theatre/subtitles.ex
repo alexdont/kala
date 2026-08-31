@@ -5,6 +5,14 @@ defmodule KinoTheatre.Subtitles do
   Alpha (.ass, common for anime), dispatching on the file name.
   """
 
+  @extensions ~w(.srt .ass .ssa .vtt .sub)
+
+  @doc "Known subtitle file extensions."
+  def extensions, do: @extensions
+
+  @doc "True when the filename ends in a known subtitle extension."
+  def subtitle_filename?(name), do: Path.extname(String.downcase(name)) in @extensions
+
   @doc "Convert by file extension; falls back to SRT handling."
   def to_vtt(filename, content) do
     if String.ends_with?(String.downcase(filename), ".ass") do

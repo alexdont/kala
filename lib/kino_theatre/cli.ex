@@ -137,7 +137,7 @@ defmodule KinoTheatre.CLI do
     details =
       case fetch_details(title) do
         {:ok, details} -> details
-        {:error, reason} -> die(tmdb_error(reason))
+        {:error, reason} -> die(tmdb_error(reason, "lookup"))
       end
 
     if anime?(details) do
@@ -145,6 +145,31 @@ defmodule KinoTheatre.CLI do
     else
       play_standard(title, details)
     end
+  end
+
+  # The one play-context builder — every play path goes through this (or
+  # entry_ctx/1 for resume entries) so the shape can't drift between them.
+  defp build_ctx(type, tmdb_id, title, opts) do
+    %{
+      type: type,
+      tmdb_id: tmdb_id,
+      title: title,
+      season: opts[:season],
+      episode: opts[:episode],
+      poster_path: opts[:poster_path],
+      anime: opts[:anime] || false,
+      search_title: opts[:search_title]
+    }
+  end
+
+  defp entry_ctx(entry) do
+    build_ctx(entry["type"], entry["tmdb_id"], entry["title"],
+      season: entry["season"],
+      episode: entry["episode"],
+      poster_path: entry["poster_path"],
+      anime: entry["anime"] || false,
+      search_title: entry["search_title"]
+    )
   end
 
   defp play_standard(title, details) do
@@ -156,14 +181,12 @@ defmodule KinoTheatre.CLI do
         "tv" -> pick_episode(details)
       end
 
-    ctx = %{
-      type: title.type,
-      tmdb_id: title.id,
-      title: title.title,
-      season: season,
-      episode: episode,
-      poster_path: details["poster_path"]
-    }
+    ctx =
+      build_ctx(title.type, title.id, title.title,
+        season: season,
+        episode: episode,
+        poster_path: details["poster_path"]
+      )
 
     title.type
     |> title_sources(title.title, title.year, imdb, season, episode)
@@ -213,16 +236,12 @@ defmodule KinoTheatre.CLI do
   end
 
   defp anime_ctx(title, details, episode, search_title) do
-    %{
-      type: title.type,
-      tmdb_id: title.id,
-      title: title.title,
-      season: nil,
+    build_ctx(title.type, title.id, title.title,
       episode: episode,
       poster_path: details["poster_path"],
       anime: true,
       search_title: search_title
-    }
+    )
   end
 
   defp kitsu_lookup(name) do
@@ -310,7 +329,7 @@ defmodule KinoTheatre.CLI do
     {results, more?} =
       case Tmdb.trending(type, page) do
         {:ok, results, more?} -> {results, more?}
-        {:error, reason} -> die(tmdb_error(reason))
+        {:error, reason} -> die(tmdb_error(reason, "trending lookup"))
       end
 
     titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
@@ -370,7 +389,7 @@ defmodule KinoTheatre.CLI do
       |> Enum.map(fn variant ->
         case Tmdb.search(variant, page) do
           {:ok, results, more?} -> {results, more?}
-          {:error, reason} -> die(tmdb_error(reason))
+          {:error, reason} -> die(tmdb_error(reason, "search"))
         end
       end)
       |> then(fn pages ->
@@ -443,7 +462,7 @@ defmodule KinoTheatre.CLI do
       case Tmdb.season(details["id"], season_number) do
         {:ok, %{"episodes" => episodes}} when episodes != [] -> episodes
         {:ok, _} -> die("TMDB lists no episodes for season #{season_number}")
-        {:error, reason} -> die(tmdb_error(reason))
+        {:error, reason} -> die(tmdb_error(reason, "season lookup"))
       end
 
     episode = pick(episodes, &describe_episode/1, "which episode?") || System.halt(0)
@@ -485,13 +504,16 @@ defmodule KinoTheatre.CLI do
   # is an explicit picker choice, not an endless background churn.
   @probe_page 8
 
-  defp probe_and_pick(sources, rd_opts, ctx, playable_so_far \\ [])
+  defp probe_and_pick(sources, rd_opts, ctx, playable_so_far \\ [], sub_task \\ nil)
 
-  defp probe_and_pick([], _rd_opts, _ctx, []) do
+  defp probe_and_pick([], _rd_opts, _ctx, [], _sub_task) do
     die("no playable sources — try another title or release")
   end
 
-  defp probe_and_pick(sources, rd_opts, ctx, playable_so_far) do
+  defp probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task) do
+    # Fetch subtitles in the background while sources are being probed, so
+    # the network round-trips overlap instead of delaying the mpv launch.
+    sub_task = sub_task || start_subtitle_task(ctx)
     {page, rest} = Enum.split(sources, @probe_page)
 
     IO.puts(
@@ -521,7 +543,7 @@ defmodule KinoTheatre.CLI do
 
       {[], rest} ->
         IO.puts(:stderr, "none playable yet — checking the next page…")
-        probe_and_pick(rest, rd_opts, ctx, [])
+        probe_and_pick(rest, rd_opts, ctx, [], sub_task)
 
       {playable, rest} ->
         items = if rest == [], do: playable, else: playable ++ [:more]
@@ -531,42 +553,53 @@ defmodule KinoTheatre.CLI do
             System.halt(0)
 
           :more ->
-            probe_and_pick(rest, rd_opts, ctx, playable)
+            probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
 
           {source, stream} ->
-            Player.open(:mpv, stream.url, subtitle_args(ctx))
+            Player.open(:mpv, stream.url, await_subtitles(sub_task))
             save_resume(ctx, source)
             IO.puts(:stderr, "playing in mpv: #{stream.filename}")
         end
     end
   end
 
+  defp start_subtitle_task(nil), do: nil
+  defp start_subtitle_task(ctx), do: Task.async(fn -> subtitle_args(ctx) end)
+
+  defp await_subtitles(nil), do: []
+
+  defp await_subtitles(task) do
+    case Task.yield(task, 45_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, args} ->
+        args
+
+      _ ->
+        IO.puts(:stderr, "subtitle fetch timed out — playing without")
+        []
+    end
+  end
+
   # Fetch an external subtitle when a provider is configured (Jimaku for
   # anime, OpenSubtitles otherwise) and hand it to mpv. Silent when no
   # provider is set up — mpv still offers the stream's embedded tracks.
-  defp subtitle_args(nil), do: []
-
   defp subtitle_args(ctx) do
-    explicit = Application.get_env(:kino_app, :subs_lang)
-    lang = explicit || Application.get_env(:kino_app, :lang) || "en"
-
-    cond do
-      explicit in ["off", "none"] ->
+    case Config.subs_lang() do
+      nil ->
         []
 
-      not KinoTheatre.SubtitleFetch.available?() ->
-        if explicit do
-          IO.puts(:stderr, "KINO_SUBS is set but no subtitle provider is configured " <>
-            "(OPENSUBTITLES_* or JIMAKU_API_KEY)")
-        end
-
-        []
-
-      true ->
+      lang ->
         case KinoTheatre.SubtitleFetch.fetch(ctx, lang) do
           {:ok, path, label} ->
             IO.puts(:stderr, "subtitles: #{label}")
             ["--sub-file=#{path}"]
+
+          {:error, :no_provider} ->
+            if Config.subs_explicit?() do
+              IO.puts(:stderr, "KINO_SUBS is set but no subtitle provider is configured for " <>
+                "this content (OPENSUBTITLES_* — or JIMAKU_API_KEY for anime)")
+            end
+
+            []
 
           {:error, reason} ->
             IO.puts(:stderr, "no external subtitles (#{sub_reason(reason)}) — embedded tracks still available")
@@ -575,14 +608,15 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp tmdb_error({:tmdb, 401, _}),
+  defp tmdb_error({:tmdb, 401, _}, _op),
     do: "TMDB rejected the key (401) — check TMDB_API_KEY in #{Config.path()}"
 
-  defp tmdb_error(reason), do: "TMDB request failed: #{inspect(reason)}"
+  defp tmdb_error(reason, op), do: "TMDB #{op} failed: #{inspect(reason)}"
 
   defp sub_reason(:not_found), do: "none found for this title"
   defp sub_reason(:no_file), do: "no file for this episode/language"
   defp sub_reason(:opensubtitles_needs_login), do: "OpenSubtitles download needs username+password"
+  defp sub_reason({:exception, message}), do: "subtitle fetch crashed: #{message}"
   defp sub_reason(reason), do: inspect(reason)
 
   # Remember what was played (episode + exact source) so `kino continue`
@@ -597,6 +631,8 @@ defmodule KinoTheatre.CLI do
       "episode" => ctx.episode,
       "title" => ctx.title,
       "poster_path" => ctx[:poster_path],
+      "anime" => ctx[:anime] || false,
+      "search_title" => ctx[:search_title],
       "source" => %{"name" => source.name, "magnet" => source.magnet, "hash" => source.hash},
       "updated_at" => System.os_time(:second)
     }
@@ -630,11 +666,14 @@ defmodule KinoTheatre.CLI do
 
   defp unplayable_reason({:torrent_status, status}), do: "RD download failed (#{status})"
   defp unplayable_reason({:download_timeout, pct}), do: "RD download timed out at #{pct}%"
-  defp unplayable_reason({:rd, 401, _}),
-    do: "Real-Debrid rejected the token (401) — check RD_TOKEN"
-
+  defp unplayable_reason({:rd, 401, _}), do: rd_auth_error()
+  defp unplayable_reason({:rd, 401}), do: rd_auth_error()
   defp unplayable_reason({:rd, status, _}), do: "Real-Debrid error #{status}"
+  defp unplayable_reason({:rd, status}), do: "Real-Debrid error #{status}"
   defp unplayable_reason(reason), do: inspect(reason)
+
+  defp rd_auth_error,
+    do: "Real-Debrid rejected the token (401) — check RD_TOKEN in #{Config.path()}"
 
   # ── continue watching ─────────────────────────────────────────────
 
@@ -652,17 +691,12 @@ defmodule KinoTheatre.CLI do
 
     IO.puts(:stderr, "trying the source you last played: #{source["name"]}")
 
-    entry_ctx = %{
-      type: entry["type"],
-      tmdb_id: entry["tmdb_id"],
-      title: entry["title"],
-      season: entry["season"],
-      episode: entry["episode"]
-    }
+    # Subtitles fetch in the background while RD resolves.
+    sub_task = start_subtitle_task(entry_ctx(entry))
 
     case RD.resolve_magnet(source["magnet"], rd_opts) do
       {:ok, stream} ->
-        Player.open(:mpv, stream.url, subtitle_args(entry_ctx))
+        Player.open(:mpv, stream.url, await_subtitles(sub_task))
         KinoTheatre.Resume.put(
           entry["type"],
           entry["tmdb_id"],
@@ -672,6 +706,8 @@ defmodule KinoTheatre.CLI do
         IO.puts(:stderr, "playing in mpv: #{stream.filename}")
 
       {:error, reason} ->
+        Task.shutdown(sub_task, :brutal_kill)
+
         IO.puts(
           :stderr,
           "last source unavailable (#{unplayable_reason(reason)}) — searching fresh sources…"
@@ -694,20 +730,12 @@ defmodule KinoTheatre.CLI do
     details =
       case fetch_details(%{type: type, id: entry["tmdb_id"]}) do
         {:ok, details} -> details
-        {:error, reason} -> die(tmdb_error(reason))
+        {:error, reason} -> die(tmdb_error(reason, "lookup"))
       end
 
     name = details["title"] || details["name"] || entry["title"]
     year = Tmdb.year(details["release_date"] || details["first_air_date"])
-
-    ctx = %{
-      type: type,
-      tmdb_id: entry["tmdb_id"],
-      title: name,
-      season: entry["season"],
-      episode: entry["episode"],
-      poster_path: entry["poster_path"]
-    }
+    ctx = entry_ctx(entry) |> Map.put(:title, name)
 
     cond do
       anime?(details) and type == "tv" and is_integer(entry["episode"]) ->
@@ -721,7 +749,10 @@ defmodule KinoTheatre.CLI do
         |> probe_and_pick([episode: n], ctx)
 
       anime?(details) and type == "movie" ->
-        q = Sources.anime_movie_query(name)
+        kitsu = kitsu_lookup(name)
+        search_title = (kitsu.anime && kitsu.anime.title) || name
+        ctx = Map.merge(ctx, %{anime: true, search_title: search_title})
+        q = Sources.anime_movie_query(search_title)
 
         case Sources.search(q, backend: :anime) do
           {:ok, sources} -> with_library(q, sources) |> probe_and_pick([], ctx)
@@ -884,9 +915,8 @@ defmodule KinoTheatre.CLI do
     die(%{error: "not cached on Real-Debrid", status: status, progress: progress})
   end
 
-  defp die_resolve({:rd, 401, _}) do
-    die("Real-Debrid rejected the token (401) — check RD_TOKEN in #{Config.path()}")
-  end
+  defp die_resolve({:rd, 401, _}), do: die(rd_auth_error())
+  defp die_resolve({:rd, 401}), do: die(rd_auth_error())
 
   defp die_resolve(reason), do: die("resolve failed: #{inspect(reason)}")
 
