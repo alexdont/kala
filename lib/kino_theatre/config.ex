@@ -13,6 +13,7 @@ defmodule KinoTheatre.Config do
     "RD_TOKEN" => :rd_token,
     "TMDB_API_KEY" => :tmdb_key,
     "KINO_LANG" => :lang,
+    "KINO_SUBS" => :subs_lang,
     "OPENSUBTITLES_API_KEY" => :opensubtitles_api_key,
     "OPENSUBTITLES_USERNAME" => :opensubtitles_username,
     "OPENSUBTITLES_PASSWORD" => :opensubtitles_password,

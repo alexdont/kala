@@ -187,7 +187,7 @@ defmodule KinoTheatre.CLI do
 
     case {title.type, kitsu.episodes} do
       {"movie", _} ->
-        ctx = anime_ctx(title, details, nil)
+        ctx = anime_ctx(title, details, nil, search_title)
         q = Sources.anime_movie_query(search_title)
 
         case Sources.search(q, backend: :anime) do
@@ -208,18 +208,20 @@ defmodule KinoTheatre.CLI do
         q = Sources.anime_episode_query(search_title, n)
 
         with_library(q, sources)
-        |> probe_and_pick([episode: n], anime_ctx(title, details, n))
+        |> probe_and_pick([episode: n], anime_ctx(title, details, n, search_title))
     end
   end
 
-  defp anime_ctx(title, details, episode) do
+  defp anime_ctx(title, details, episode, search_title) do
     %{
       type: title.type,
       tmdb_id: title.id,
       title: title.title,
       season: nil,
       episode: episode,
-      poster_path: details["poster_path"]
+      poster_path: details["poster_path"],
+      anime: true,
+      search_title: search_title
     }
   end
 
@@ -532,12 +534,51 @@ defmodule KinoTheatre.CLI do
             probe_and_pick(rest, rd_opts, ctx, playable)
 
           {source, stream} ->
-            Player.open(:mpv, stream.url)
+            Player.open(:mpv, stream.url, subtitle_args(ctx))
             save_resume(ctx, source)
             IO.puts(:stderr, "playing in mpv: #{stream.filename}")
         end
     end
   end
+
+  # Fetch an external subtitle when a provider is configured (Jimaku for
+  # anime, OpenSubtitles otherwise) and hand it to mpv. Silent when no
+  # provider is set up — mpv still offers the stream's embedded tracks.
+  defp subtitle_args(nil), do: []
+
+  defp subtitle_args(ctx) do
+    explicit = Application.get_env(:kino_app, :subs_lang)
+    lang = explicit || Application.get_env(:kino_app, :lang) || "en"
+
+    cond do
+      explicit in ["off", "none"] ->
+        []
+
+      not KinoTheatre.SubtitleFetch.available?() ->
+        if explicit do
+          IO.puts(:stderr, "KINO_SUBS is set but no subtitle provider is configured " <>
+            "(OPENSUBTITLES_* or JIMAKU_API_KEY)")
+        end
+
+        []
+
+      true ->
+        case KinoTheatre.SubtitleFetch.fetch(ctx, lang) do
+          {:ok, path, label} ->
+            IO.puts(:stderr, "subtitles: #{label}")
+            ["--sub-file=#{path}"]
+
+          {:error, reason} ->
+            IO.puts(:stderr, "no external subtitles (#{sub_reason(reason)}) — embedded tracks still available")
+            []
+        end
+    end
+  end
+
+  defp sub_reason(:not_found), do: "none found for this title"
+  defp sub_reason(:no_file), do: "no file for this episode/language"
+  defp sub_reason(:opensubtitles_needs_login), do: "OpenSubtitles download needs username+password"
+  defp sub_reason(reason), do: inspect(reason)
 
   # Remember what was played (episode + exact source) so `kino continue`
   # can jump straight back without re-hunting sources.
@@ -603,9 +644,17 @@ defmodule KinoTheatre.CLI do
 
     IO.puts(:stderr, "trying the source you last played: #{source["name"]}")
 
+    entry_ctx = %{
+      type: entry["type"],
+      tmdb_id: entry["tmdb_id"],
+      title: entry["title"],
+      season: entry["season"],
+      episode: entry["episode"]
+    }
+
     case RD.resolve_magnet(source["magnet"], rd_opts) do
       {:ok, stream} ->
-        Player.open(:mpv, stream.url)
+        Player.open(:mpv, stream.url, subtitle_args(entry_ctx))
         KinoTheatre.Resume.put(
           entry["type"],
           entry["tmdb_id"],
@@ -652,6 +701,7 @@ defmodule KinoTheatre.CLI do
         kitsu = kitsu_lookup(name)
         search_title = (kitsu.anime && kitsu.anime.title) || name
         n = entry["episode"]
+        ctx = Map.merge(ctx, %{anime: true, search_title: search_title})
 
         Sources.anime_episode_query(search_title, n)
         |> with_library(anime_episode_sources(search_title, n, kitsu.anidb))
