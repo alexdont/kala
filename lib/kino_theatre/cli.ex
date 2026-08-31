@@ -20,6 +20,7 @@ defmodule KinoTheatre.CLI do
       ["resolve" | rest] -> resolve(rest)
       ["play" | rest] -> play(rest)
       ["config" | _] -> config()
+      ["update" | _] -> update()
       ["help" | _] -> usage(0)
       ["--help" | _] -> usage(0)
       [] -> if tty?(), do: main_menu(), else: usage(1)
@@ -1040,6 +1041,66 @@ defmodule KinoTheatre.CLI do
     IO.puts(Jason.encode!(%{config_file: Config.path(), keys: Config.status()}))
   end
 
+  # ── update (self-replace the standalone binary) ───────────────────
+
+  defp update do
+    bin = System.get_env("__BURRITO_BIN_PATH")
+
+    unless bin do
+      die("self-update only works for the standalone binary — " <>
+        "from a source checkout: git pull && mix escript.build")
+    end
+
+    current = Application.spec(:kino_app, :vsn) |> to_string()
+    IO.puts(:stderr, "current: v#{current} — checking the latest release…")
+
+    latest =
+      KinoTheatre.UpdateCheck.fetch_latest() ||
+        die("couldn't reach GitHub releases — try again later")
+
+    if Version.compare(current, latest) != :lt do
+      IO.puts(:stderr, "already up to date")
+      IO.puts(Jason.encode!(%{updated: false, version: current}))
+      System.halt(0)
+    end
+
+    asset =
+      KinoTheatre.UpdateCheck.asset_name() ||
+        die("no prebuilt binary for this platform — update from source")
+
+    IO.puts(:stderr, "downloading v#{latest} (#{asset})…")
+
+    body =
+      case Req.get(KinoTheatre.UpdateCheck.download_url(asset),
+             receive_timeout: 120_000,
+             decode_body: false
+           ) do
+        {:ok, %{status: 200, body: body}} when is_binary(body) and byte_size(body) > 1_000_000 ->
+          body
+
+        {:ok, %{status: status}} ->
+          die("download failed (HTTP #{status})")
+
+        {:error, reason} ->
+          die("download failed: #{inspect(reason)}")
+      end
+
+    # Stage next to the target, then rename — atomic on the same filesystem,
+    # so a failed download can never leave a half-written kino behind.
+    staged = bin <> ".new"
+
+    with :ok <- File.write(staged, body),
+         :ok <- File.chmod(staged, 0o755),
+         :ok <- File.rename(staged, bin) do
+      IO.puts(:stderr, "✔ updated v#{current} → v#{latest} (#{bin})")
+      IO.puts(Jason.encode!(%{updated: true, from: current, to: latest}))
+    else
+      {:error, reason} ->
+        File.rm(staged)
+        die("couldn't replace #{bin} (#{inspect(reason)}) — is that location writable?")
+    end
+  end
+
   # ── plumbing ──────────────────────────────────────────────────────
 
   defp check_invalid([]), do: :ok
@@ -1065,6 +1126,7 @@ defmodule KinoTheatre.CLI do
       kino resolve <magnet>  [--season N] [--episode N]
       kino play <magnet|url> [--season N] [--episode N]
       kino config
+      kino update            self-update the standalone binary to the latest release
 
     watch is interactive: pick the title (TMDB), for shows the season and
     episode, then a source — it resolves on your debrid account and plays

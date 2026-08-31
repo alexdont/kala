@@ -29,6 +29,28 @@ defmodule KinoTheatre.UpdateCheck do
 
   defp current_version, do: Application.spec(:kino_app, :vsn) |> to_string()
 
+  @doc "Latest release version straight from GitHub (no cache), or nil."
+  def fetch_latest do
+    with version when is_binary(version) <- fetch() do
+      write_cache(version)
+      version
+    end
+  end
+
+  @doc "The release-asset name for this machine, or nil when unsupported."
+  def asset_name do
+    arch = :erlang.system_info(:system_architecture) |> to_string()
+
+    case {:os.type(), arch} do
+      {{:unix, :linux}, "x86_64" <> _} -> "kino_linux_x86_64"
+      {{:unix, :darwin}, "aarch64" <> _} -> "kino_macos_aarch64"
+      {{:unix, :darwin}, "arm" <> _} -> "kino_macos_aarch64"
+      _ -> nil
+    end
+  end
+
+  def download_url(asset), do: "https://github.com/#{@repo}/releases/latest/download/#{asset}"
+
   defp latest_version do
     case read_cache() do
       {:fresh, latest} ->
