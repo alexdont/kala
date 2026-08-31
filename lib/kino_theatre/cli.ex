@@ -463,7 +463,7 @@ defmodule KinoTheatre.CLI do
 
   defp describe_title(t) do
     kind = if t.type == "tv", do: "series", else: "movie"
-    rating = if t.vote && t.vote > 0, do: " · ★#{Float.round(t.vote * 1.0, 1)}"
+    rating = if t.vote && t.vote > 0, do: " · ★ #{Float.round(t.vote * 1.0, 1)}"
     "#{t.title} (#{t.year || "?"}) · #{kind}#{rating}"
   end
 
