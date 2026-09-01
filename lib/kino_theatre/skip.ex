@@ -36,9 +36,33 @@ defmodule KinoTheatre.Skip do
   local opts = { windows = "", mode = "ask" }
   options.read_options(opts, "kino-skip")
 
+  -- "start-end@episodelength;…" — the submitted episode length rides along
+  -- so mismatched cuts can be rejected at runtime (@0 / missing = unknown).
   local windows = {}
-  for s, e in string.gmatch(opts.windows, "([%d%.]+)%-([%d%.]+)") do
-    windows[#windows + 1] = { s = tonumber(s), e = tonumber(e), done = false }
+  for s, e, len in string.gmatch(opts.windows, "([%d%.]+)%-([%d%.]+)@?([%d%.]*)") do
+    windows[#windows + 1] =
+      { s = tonumber(s), e = tonumber(e), len = tonumber(len) or 0, done = false }
+  end
+
+  -- AniSkip timestamps only make sense for the cut they were submitted
+  -- against: if this file's duration is >15s off the submitted episode
+  -- length, the window would point at the wrong seconds — drop it.
+  local function usable(w)
+    if w.len == 0 then return true end
+    -- duration unknown for the first moments — hold off rather than offer
+    -- a window that may belong to a different cut.
+    local dur = mp.get_property_number("duration")
+    if not dur then return false end
+    if math.abs(dur - w.len) > 15 then
+      if not w.warned then
+        w.warned = true
+        msg.info(string.format(
+          "dropping window %.0f-%.0f: episode length mismatch (file %.0fs, submitted %.0fs)",
+          w.s, w.e, dur, w.len))
+      end
+      return false
+    end
+    return true
   end
 
   local skip_titles = {
@@ -67,8 +91,11 @@ defmodule KinoTheatre.Skip do
     if zone.chidx then skipped_chapters[zone.chidx] = true end
   end
 
+  -- Marking "done" is auto-mode only: it stops the auto-skip from looping
+  -- when the user rewinds to deliberately watch an opening. In ask mode
+  -- nothing is marked — the offer simply reappears whenever the playhead
+  -- is inside a window, so it works again after a skip, a rewind, a replay.
   local function do_skip(zone)
-    mark_done(zone)
     mp.commandv("seek", zone.target, "absolute+exact")
     mp.osd_message("kino: skipped " .. zone.what, 2)
     msg.info("skipped " .. zone.what)
@@ -76,7 +103,7 @@ defmodule KinoTheatre.Skip do
 
   local function window_zone(t)
     for i, w in ipairs(windows) do
-      if not w.done and t >= w.s and t < w.e - 1 then
+      if usable(w) and not w.done and t >= w.s and t < w.e - 1 then
         return { target = w.e, what = "opening/ending", key = "w" .. i, window = w }
       end
     end
@@ -111,6 +138,7 @@ defmodule KinoTheatre.Skip do
     end
 
     if opts.mode == "auto" then
+      mark_done(zone)
       do_skip(zone)
       return
     end
@@ -189,14 +217,39 @@ defmodule KinoTheatre.Skip do
   defp windows(_ctx), do: ""
 
   defp fetch_windows(title, ep) do
-    with {:ok, [anime | _]} <- Kitsu.search(title),
-         {:ok, mal} <- Kitsu.mal_id(anime.id),
+    with mal when mal != nil <- mal_id_for(title),
          {:ok, results} <- aniskip(mal, ep) do
-      Enum.map_join(results, ";", fn %{"interval" => %{"startTime" => s, "endTime" => e}} ->
-        "#{s}-#{e}"
+      Enum.map_join(results, ";", fn %{"interval" => %{"startTime" => s, "endTime" => e}} = r ->
+        "#{s}-#{e}@#{r["episodeLength"] || 0}"
       end)
     else
       _ -> ""
+    end
+  end
+
+  # Kitsu's MAL mappings are often missing for new seasonal shows (that's
+  # how "Marriage Toxin" slipped through) — fall back to AniList, whose
+  # search returns the MAL id directly.
+  defp mal_id_for(title) do
+    with {:ok, [anime | _]} <- Kitsu.search(title),
+         {:ok, mal} <- Kitsu.mal_id(anime.id) do
+      mal
+    else
+      _ -> anilist_mal_id(title)
+    end
+  end
+
+  defp anilist_mal_id(title) do
+    case Req.post("https://graphql.anilist.co",
+           json: %{
+             query: "query($s:String){Media(search:$s,type:ANIME){idMal}}",
+             variables: %{s: title}
+           },
+           retry: false,
+           receive_timeout: 8_000
+         ) do
+      {:ok, %{status: 200, body: %{"data" => %{"Media" => %{"idMal" => mal}}}}} -> mal
+      _ -> nil
     end
   end
 
@@ -211,19 +264,23 @@ defmodule KinoTheatre.Skip do
     end
   end
 
-  # Windows cache — an empty result is cached too (negative cache), so shows
-  # AniSkip doesn't know never cost repeat lookups.
+  # Windows cache. Found timestamps keep for 30 days; an empty result only
+  # for a day — the community submits timestamps while a season airs, so
+  # "no data" is often just "no data yet".
+  @empty_cache_max_age_s 24 * 3600
+
   defp cached(title, ep, fetch) do
     dir = Path.join(System.tmp_dir!(), "kino-skip")
     File.mkdir_p!(dir)
     key = :erlang.md5("#{title}-#{ep}") |> Base.encode16(case: :lower) |> binary_part(0, 16)
     path = Path.join(dir, key)
-    fresh_after = System.os_time(:second) - @cache_max_age_s
 
-    case File.stat(path, time: :posix) do
-      {:ok, %{mtime: mtime}} when mtime > fresh_after ->
-        File.read!(path)
-
+    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),
+         {:ok, spec} <- File.read(path),
+         ttl = if(spec == "", do: @empty_cache_max_age_s, else: @cache_max_age_s),
+         true <- mtime > System.os_time(:second) - ttl do
+      spec
+    else
       _ ->
         spec = fetch.()
         File.write(path, spec)
