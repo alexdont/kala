@@ -16,6 +16,8 @@ defmodule KinoTheatre.Config do
     "KINO_SUBS" => :subs_lang,
     "KINO_MPV_ARGS" => :mpv_args,
     "KINO_POSTERS" => :posters,
+    "KINO_SKIP" => :skip,
+    "KINO_AUTOPLAY" => :autoplay,
     "KINO_DOWNLOAD_DIR" => :download_dir,
     "OPENSUBTITLES_API_KEY" => :opensubtitles_api_key,
     "OPENSUBTITLES_USERNAME" => :opensubtitles_username,
@@ -74,6 +76,40 @@ defmodule KinoTheatre.Config do
     case Application.get_env(:kino_app, :posters) do
       value when is_binary(value) -> value |> String.trim() |> String.downcase()
       _ -> "auto"
+    end
+  end
+
+  @doc """
+  Intro/credits skipping (KINO_SKIP): "ask" (default — show a Skip button
+  when an intro is detected, skip only on Tab), "auto" (skip immediately),
+  or "off". Detection: AniSkip timestamps for anime + named chapters.
+  """
+  def skip do
+    case Application.get_env(:kino_app, :skip) do
+      value when is_binary(value) ->
+        case value |> String.trim() |> String.downcase() do
+          off when off in ["off", "none", "false"] -> "off"
+          "auto" -> "auto"
+          _ -> "ask"
+        end
+
+      _ ->
+        "ask"
+    end
+  end
+
+  @doc """
+  Autoplay the next episode when one ends (KINO_AUTOPLAY): "off" by default —
+  binge-watching is strictly opt-in ("on" here, `--binge`, or the post-play
+  menu's autoplay entry).
+  """
+  def autoplay? do
+    case Application.get_env(:kino_app, :autoplay) do
+      value when is_binary(value) ->
+        String.downcase(String.trim(value)) in ["on", "true", "yes", "1"]
+
+      _ ->
+        false
     end
   end
 

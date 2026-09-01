@@ -73,8 +73,13 @@ MIX_ENV=prod mix release kino   # → burrito_out/kino_* (self-contained)
 
 ## Configure
 
-Put your keys in `~/.config/kino/config` (env vars with the same names also
-work and take precedence):
+Run `kino setup` — an interactive wizard that asks for your two keys,
+validates them live against the real services, and writes the config for
+you. (`kino doctor` later checks every binary, key, and service kino talks
+to, with latencies.)
+
+Or put keys in `~/.config/kino/config` by hand (env vars with the same
+names also work and take precedence):
 
 ```
 # required — your Real-Debrid API token: https://real-debrid.com/apitoken
@@ -86,6 +91,13 @@ KINO_LANG=en
 # poster previews: auto (sharp pixel graphics), ascii (colored ASCII art),
 # ascii-bg (ASCII with painted backgrounds), off
 KINO_POSTERS=auto
+# intro/credits skipping — detected via AniSkip (anime) + named chapters:
+#   ask (default): a "Skip — hold TAB" button appears on the video, skip is your call
+#   auto: skip immediately · off: disable (hold Tab = +85s works in ask/auto)
+KINO_SKIP=ask
+# autoplay the next episode when one ends ("on" to enable — off by default;
+# --binge or the post-play menu's autoplay entry do it per session)
+KINO_AUTOPLAY=off
 # optional: Jackett/Prowlarr (more indexers), OpenSubtitles, Jimaku
 ```
 
@@ -100,6 +112,8 @@ KINO_POSTERS=auto
 | `kino search "<query>"` | list raw sources (JSON when piped) |
 | `kino resolve <magnet>` | magnet → direct stream URL (JSON) |
 | `kino play <magnet\|url>` | resolve and launch mpv directly |
+| `kino setup` | first-run wizard: keys in, validated live |
+| `kino doctor` | health-check binaries, keys, and services |
 | `kino config` | show config status |
 
 `kino watch --raw "<text>"` skips TMDB and searches indexers by text.

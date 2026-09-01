@@ -21,6 +21,8 @@ defmodule KinoTheatre.CLI do
       ["resolve" | rest] -> resolve(rest)
       ["play" | rest] -> play(rest)
       ["config" | _] -> config()
+      ["setup" | _] -> setup()
+      ["doctor" | _] -> doctor()
       ["update" | _] -> update()
       ["help" | _] -> usage(0)
       ["--help" | _] -> usage(0)
@@ -77,23 +79,180 @@ defmodule KinoTheatre.CLI do
   end
 
   defp main_menu do
+    # First run with no keys: go straight into the wizard instead of letting
+    # every menu entry die with "RD_TOKEN is not set".
+    unless RD.configured?() and Tmdb.configured?() do
+      IO.puts(:stderr, "\n  missing keys — let's set you up first")
+      setup()
+    end
+
     clear_screen()
     print_banner()
     IO.puts(:stderr, greeting())
     print_update_status()
 
-    items = [
-      {:continue, "▶ Continue — pick up where you left off"},
-      {:featured, "★ Featured — trending movies, shows & anime"},
-      {:search, "⌕ Search — find something by name"}
-    ]
+    items =
+      List.flatten([
+        up_next_item(),
+        {:continue, "▶ Continue — pick up where you left off"},
+        {:featured, "★ Featured — trending movies, shows & anime"},
+        {:search, "⌕ Search — find something by name"},
+        {:settings, "⚙ Settings — toggles & preferences"}
+      ])
 
-    case pick(items, fn {_action, label} -> label end, "↑↓ to move · enter to select · esc to quit") do
+    case pick(items, &menu_label/1, "↑↓ to move · enter to select · esc to quit") do
       nil -> System.halt(0)
+      {:up_next, entry} -> play_next_episode(entry)
+      {:resume_last, entry} -> continue_entry(entry)
       {:continue, _} -> continue()
       {:featured, _} -> featured()
       {:search, _} -> menu_search()
+      {:settings, _} -> settings_menu()
     end
+  end
+
+  # ── settings (interactive toggles) ────────────────────────────────
+  # Arrow through the settings, Enter toggles/cycles (or prompts, for text
+  # values). Every change is written to the config file immediately and
+  # takes effect for the rest of the session.
+
+  @settings [
+    {"KINO_AUTOPLAY", "⚡ Autoplay next episode", {:cycle, ["off", "on"]}},
+    {"KINO_SKIP", "⏭ Intro/credits skipping", {:cycle, ["ask", "auto", "off"]}},
+    {"KINO_POSTERS", "🖼 Poster previews", {:cycle, ["auto", "ascii", "ascii-bg", "off"]}},
+    {"KINO_LANG", "🗣 Audio language preference", :text},
+    {"KINO_SUBS", "💬 Subtitle language (off = none)", :text},
+    {"KINO_DOWNLOAD_DIR", "📁 Download folder", :text},
+    {"KINO_MPV_ARGS", "🎬 Extra mpv arguments", :text}
+  ]
+
+  defp settings_menu(selected \\ 0) do
+    clear_screen()
+
+    items =
+      Enum.map(@settings, fn {key, label, kind} -> {:setting, key, label, kind} end) ++
+        [{:keys, nil, "🔑 API keys — rerun the setup wizard", nil}]
+
+    case pick(items, &describe_setting/1, "enter toggles or edits · esc goes back", nil, selected) do
+      nil ->
+        main_menu()
+
+      {:keys, _, _, _} = item ->
+        setup()
+        settings_menu(Enum.find_index(items, &(&1 == item)) || 0)
+
+      {:setting, key, label, kind} = item ->
+        change_setting(key, label, kind)
+        settings_menu(Enum.find_index(items, &(&1 == item)) || 0)
+    end
+  end
+
+  defp describe_setting({:keys, _, label, _}), do: label
+
+  defp describe_setting({:setting, key, label, _kind}),
+    do: "#{String.pad_trailing(label, 34)}  [#{setting_value(key)}]"
+
+  defp setting_value("KINO_AUTOPLAY"), do: if(Config.autoplay?(), do: "on", else: "off")
+  defp setting_value("KINO_SKIP"), do: Config.skip()
+  defp setting_value("KINO_POSTERS"), do: Config.posters()
+  defp setting_value("KINO_LANG"), do: Config.lang()
+  defp setting_value("KINO_SUBS"), do: Config.subs_lang() || "off"
+
+  defp setting_value("KINO_DOWNLOAD_DIR"),
+    do: Application.get_env(:kino_app, :download_dir) || Path.join(System.user_home!(), "Videos")
+
+  defp setting_value("KINO_MPV_ARGS"),
+    do: Application.get_env(:kino_app, :mpv_args) || "(none)"
+
+  defp change_setting(key, _label, {:cycle, values}) do
+    current = setting_value(key)
+    index = Enum.find_index(values, &(&1 == current)) || 0
+    next = Enum.at(values, rem(index + 1, length(values)))
+    save_setting(key, next)
+  end
+
+  defp change_setting(key, label, :text) do
+    case IO.gets("  #{label} [#{setting_value(key)}] — new value (enter keeps): ") do
+      :eof ->
+        :ok
+
+      line ->
+        case String.trim(line) do
+          "" -> :ok
+          value -> save_setting(key, value)
+        end
+    end
+  end
+
+  defp save_setting(key, value) do
+    write_config_keys([{key, value}])
+    # Env vars beat the file, so a shell-exported key won't budge — put the
+    # new value straight into the app env so the change applies either way.
+    Application.put_env(:kino_app, Map.fetch!(config_app_keys(), key), value)
+  end
+
+  defp config_app_keys do
+    %{
+      "KINO_AUTOPLAY" => :autoplay,
+      "KINO_SKIP" => :skip,
+      "KINO_POSTERS" => :posters,
+      "KINO_LANG" => :lang,
+      "KINO_SUBS" => :subs_lang,
+      "KINO_DOWNLOAD_DIR" => :download_dir,
+      "KINO_MPV_ARGS" => :mpv_args
+    }
+  end
+
+  # The smart first row: if the most recent thing was an episode watched to
+  # the end, offer its next episode; if it was left mid-way, offer to resume
+  # it directly. Falls back to nothing (the plain menu) otherwise.
+  defp up_next_item do
+    case KinoTheatre.Resume.all() do
+      [entry | _] ->
+        ctx = entry_ctx(entry)
+
+        cond do
+          KinoTheatre.Position.finished?(ctx) and is_integer(entry["episode"]) ->
+            [{:up_next, %{entry | "episode" => entry["episode"] + 1}}]
+
+          KinoTheatre.Position.resume_at(ctx) != nil ->
+            [{:resume_last, entry}]
+
+          true ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp menu_label({:up_next, entry}),
+    do: "⚡ Up Next — #{entry["title"]}#{entry_ep(entry)}"
+
+  defp menu_label({:resume_last, entry}) do
+    at =
+      case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+        nil -> ""
+        time -> " · at #{time}"
+      end
+
+    "▶ Resume — #{entry["title"]}#{entry_ep(entry)}#{at}"
+  end
+
+  defp menu_label({_action, label}) when is_binary(label), do: label
+
+  defp entry_ep(entry) do
+    cond do
+      entry["season"] && entry["episode"] -> " S#{pad2(entry["season"])}E#{pad2(entry["episode"])}"
+      entry["episode"] -> " · Ep #{entry["episode"]}"
+      true -> ""
+    end
+  end
+
+  defp play_next_episode(entry) do
+    IO.puts(:stderr, "#{entry["title"]}#{entry_ep(entry)} — finding sources…")
+    play_entry(entry, rd_opts(entry["season"], entry["episode"]))
   end
 
   # Version line under the greeting. Capped at 2s and silent on any failure
@@ -260,6 +419,7 @@ defmodule KinoTheatre.CLI do
     end
 
     if opts[:auto], do: Process.put(:kino_auto, true)
+    if opts[:binge], do: Process.put(:kino_binge, true)
 
     cond do
       opts[:raw] ->
@@ -277,7 +437,7 @@ defmodule KinoTheatre.CLI do
   defp watch_args(argv) do
     {opts, args, invalid} =
       OptionParser.parse(argv,
-        strict: [backend: :string, limit: :integer, raw: :boolean, auto: :boolean]
+        strict: [backend: :string, limit: :integer, raw: :boolean, auto: :boolean, binge: :boolean]
       )
 
     check_invalid(invalid)
@@ -395,7 +555,12 @@ defmodule KinoTheatre.CLI do
         play_standard(title, details)
 
       {"tv", episodes} ->
-        episode = pick(episodes, &describe_anime_episode/1, "which episode?") || System.halt(0)
+        describe = fn ep ->
+          watched_mark(%{type: "tv", tmdb_id: title.id, season: nil, episode: ep.number}) <>
+            describe_anime_episode(ep)
+        end
+
+        episode = pick(episodes, describe, "which episode?") || System.halt(0)
         n = episode.number
         sources = anime_episode_sources(search_title, n, kitsu.anidb)
         q = Sources.anime_episode_query(search_title, n)
@@ -645,9 +810,23 @@ defmodule KinoTheatre.CLI do
         {:error, reason} -> die(tmdb_error(reason, "season lookup"))
       end
 
-    episode = pick(episodes, &describe_episode/1, "which episode?") || System.halt(0)
+    describe = fn e ->
+      mark =
+        watched_mark(%{
+          type: "tv",
+          tmdb_id: details["id"],
+          season: season_number,
+          episode: e["episode_number"]
+        })
+
+      mark <> describe_episode(e)
+    end
+
+    episode = pick(episodes, describe, "which episode?") || System.halt(0)
     {season_number, episode["episode_number"]}
   end
+
+  defp watched_mark(ctx), do: if(KinoTheatre.Position.finished?(ctx), do: "✓ ", else: "")
 
   defp find_sources(query, torrentio) do
     IO.puts(:stderr, "searching sources: #{query}")
@@ -781,11 +960,80 @@ defmodule KinoTheatre.CLI do
         download_stream(stream)
 
       :play ->
-        Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
+        Player.open(
+          :mpv,
+          stream.url,
+          await_subtitles(sub_task) ++ position_args(ctx) ++ KinoTheatre.Skip.script_args()
+        )
+
         save_resume(ctx, source)
         IO.puts(:stderr, "playing in mpv: #{stream.filename}")
-        post_play_menu(ctx, stream)
+
+        binge? = Process.get(:kino_binge) || Config.autoplay?()
+
+        if binge? and ctx && is_integer(ctx.episode),
+          do: binge_wait(ctx),
+          else: post_play_menu(ctx, stream)
     end
+  end
+
+  # ── binge mode (auto-next on episode end) ─────────────────────────
+  # kino stays alive watching the position file the Lua tracker writes:
+  # "done" (mpv hit eof) → countdown → next episode, auto-picked. A stale
+  # file (no save for 25s while the tracker saves every 5s) means the user
+  # closed mpv mid-episode — binge ends quietly.
+
+  defp binge_wait(ctx) do
+    IO.puts(
+      :stderr,
+      IO.ANSI.format([
+        :faint,
+        "binge mode: next episode starts when this one ends (Ctrl-C quits kino, mpv keeps playing)",
+        :reset
+      ])
+    )
+
+    watch_for_eof(ctx, System.os_time(:second))
+  end
+
+  defp watch_for_eof(ctx, started_at) do
+    Process.sleep(3_000)
+
+    cond do
+      KinoTheatre.Position.finished?(ctx) ->
+        countdown_next(ctx)
+
+      stale?(ctx, started_at) ->
+        IO.puts(:stderr, "mpv closed mid-episode — leaving binge mode")
+
+      true ->
+        watch_for_eof(ctx, started_at)
+    end
+  end
+
+  # No position save for 25s (tracker writes every 5s) = mpv is gone. The
+  # started_at grace period covers mpv's startup before the first save.
+  defp stale?(ctx, started_at) do
+    now = System.os_time(:second)
+
+    case KinoTheatre.Position.last_saved_at(ctx) do
+      nil -> now - started_at > 60
+      mtime -> now - mtime > 25
+    end
+  end
+
+  defp countdown_next(ctx) do
+    next = %{ctx | episode: ctx.episode + 1}
+    IO.puts(:stderr, "")
+
+    for n <- 10..1//-1 do
+      IO.write(:stderr, "\r  ⚡ next: #{playing_desc(next)} in #{n}s… (Ctrl-C stops) ")
+      Process.sleep(1_000)
+    end
+
+    IO.puts(:stderr, "")
+    Process.put(:kino_auto, true)
+    play_adjacent(ctx, 1)
   end
 
   # ── post-play controls (mov-cli style) ────────────────────────────
@@ -819,20 +1067,28 @@ defmodule KinoTheatre.CLI do
       items =
         List.flatten([
           if(episodic?, do: [{:next, "⏭  next episode"}], else: []),
+          if(episodic?, do: [{:binge, "⚡  autoplay — chain next episodes"}], else: []),
           {:replay, "↻  replay"},
           if(episodic? and ctx.episode > 1, do: [{:previous, "⏮  previous episode"}], else: []),
           if(episodic?,
             do: [{:select, "☰  episodes — choose another"}],
             else: [{:select, "⌕  search — find something else"}]
           ),
+          {:imdb, "★  rate on IMDb — open in browser"},
           {:quit, "✕  quit"}
         ])
 
       case pick(items, &elem(&1, 1), "what next?") do
         {:next, _} -> play_adjacent(ctx, 1)
+        {:binge, _} ->
+          Process.put(:kino_binge, true)
+          binge_wait(ctx)
         {:replay, _} -> replay(ctx, stream)
         {:previous, _} -> play_adjacent(ctx, -1)
         {:select, _} -> reselect(ctx)
+        {:imdb, _} ->
+          open_imdb(ctx)
+          post_play_menu(ctx, stream)
         _ -> System.halt(0)
       end
     end
@@ -841,7 +1097,12 @@ defmodule KinoTheatre.CLI do
   # Same URL again; position args resume from wherever the tracker last
   # saved, so "replay" doubles as "reopen where I was" after closing mpv.
   defp replay(ctx, stream) do
-    Player.open(:mpv, stream.url, subtitle_args(ctx) ++ position_args(ctx))
+    args =
+      subtitle_args(ctx) ++
+        KinoTheatre.Skip.window_args(ctx) ++
+        position_args(ctx) ++ KinoTheatre.Skip.script_args()
+
+    Player.open(:mpv, stream.url, args)
     IO.puts(:stderr, "playing in mpv: #{stream.filename}")
     post_play_menu(ctx, stream)
   end
@@ -863,6 +1124,30 @@ defmodule KinoTheatre.CLI do
       play_title(%{type: ctx.type, id: ctx.tmdb_id, title: ctx.title, year: nil})
     else
       menu_search()
+    end
+  end
+
+  # Open the title's IMDb page in the browser (the user rates and logs
+  # watched titles there). The IMDb id comes from TMDB's external ids; with
+  # no match, fall back to an IMDb search for the title.
+  defp open_imdb(ctx) do
+    url =
+      with {:ok, details} <- fetch_details(%{type: ctx.type, id: ctx.tmdb_id}),
+           imdb when is_binary(imdb) <- Tmdb.imdb_id(details) do
+        "https://www.imdb.com/title/#{imdb}/"
+      else
+        _ -> "https://www.imdb.com/find/?q=#{URI.encode_www_form(ctx.title || "")}"
+      end
+
+    browser_open(url)
+    IO.puts(:stderr, "opened in browser: #{url}")
+  end
+
+  # Detached, like the mpv launch — the browser must outlive kino.
+  defp browser_open(url) do
+    case System.find_executable("xdg-open") || System.find_executable("open") do
+      nil -> IO.puts(:stderr, "no browser opener found — visit: #{url}")
+      opener -> System.cmd("sh", ["-c", ~s("$@" >/dev/null 2>&1 &), "sh", opener, url])
     end
   end
 
@@ -921,8 +1206,12 @@ defmodule KinoTheatre.CLI do
     end
   end
 
+  # Subtitles and AniSkip windows both need network round-trips — fetch them
+  # together in the background while sources are probed / RD resolves.
   defp start_subtitle_task(nil), do: nil
-  defp start_subtitle_task(ctx), do: Task.async(fn -> subtitle_args(ctx) end)
+
+  defp start_subtitle_task(ctx),
+    do: Task.async(fn -> subtitle_args(ctx) ++ KinoTheatre.Skip.window_args(ctx) end)
 
   defp await_subtitles(nil), do: []
 
@@ -1054,6 +1343,10 @@ defmodule KinoTheatre.CLI do
     if entries == [], do: die("nothing to continue — play something with kino watch first")
 
     entry = pick(entries, &describe_resume/1, "continue watching") || System.halt(0)
+    continue_entry(entry)
+  end
+
+  defp continue_entry(entry) do
     rd_opts = rd_opts(entry["season"], entry["episode"])
     source = entry["source"]
 
@@ -1065,7 +1358,11 @@ defmodule KinoTheatre.CLI do
 
     case RD.resolve_magnet(source["magnet"], rd_opts) do
       {:ok, stream} ->
-        Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
+        Player.open(
+          :mpv,
+          stream.url,
+          await_subtitles(sub_task) ++ position_args(ctx) ++ KinoTheatre.Skip.script_args()
+        )
         KinoTheatre.Resume.put(
           entry["type"],
           entry["tmdb_id"],
@@ -1162,9 +1459,11 @@ defmodule KinoTheatre.CLI do
   # else a numbered prompt. Returns the chosen item, or nil on cancel.
   # `preview` maps an item to an image URL (or nil) — rendered next to the
   # list via chafa when both chafa and a URL are available.
-  defp pick(items, describe, header, preview \\ nil) do
+  # `initial` restores the cursor to that item index — used by menus that
+  # re-render after an action (settings), so the cursor doesn't jump home.
+  defp pick(items, describe, header, preview \\ nil, initial \\ nil) do
     if System.find_executable("fzf"),
-      do: pick_fzf(items, describe, header, preview),
+      do: pick_fzf(items, describe, header, preview, initial),
       else: pick_number(items, describe, header)
   end
 
@@ -1324,7 +1623,10 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp pick_fzf(items, describe, header, preview) do
+  defp pick_fzf(items, describe, header, preview, initial \\ nil) do
+    # fzf positions are 1-based; pos(1) is where it starts anyway.
+    pos = if initial && initial > 0, do: "+pos(#{initial + 1})", else: ""
+
     preview? =
       preview != nil and Config.posters() != "off" and
         System.find_executable("chafa") != nil and posters_fit?()
@@ -1353,10 +1655,13 @@ defmodule KinoTheatre.CLI do
         ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse ) <>
           ~s(--header="$2" ) <>
           ~s[--preview-window='right,#{poster_width()}%,border-left,<#{@poster_min_pane}(hidden)' ] <>
-          ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})' ] <>
+          ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})#{pos}' ] <>
           ~s(--preview '#{poster_preview_script()}' < "$1")
       else
-        ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% --header="$2" < "$1")
+        start_bind = if pos == "", do: "", else: ~s[--bind 'start:pos(#{initial + 1})' ]
+
+        ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% ) <>
+          start_bind <> ~s(--header="$2" < "$1")
       end
 
     api_key = Base.encode16(:crypto.strong_rand_bytes(12))
@@ -1484,6 +1789,185 @@ defmodule KinoTheatre.CLI do
     IO.puts(Jason.encode!(%{config_file: Config.path(), keys: Config.status()}))
   end
 
+  # ── setup (interactive first-run wizard) ──────────────────────────
+
+  defp setup do
+    unless tty?(), do: die("setup is interactive — run it at a terminal")
+
+    IO.puts(:stderr, IO.ANSI.format(["\n  🍿 ", :bright, "kino setup", :reset, " — two keys and you're watching\n"]))
+
+    rd =
+      prompt_key(
+        "Real-Debrid API token",
+        "https://real-debrid.com/apitoken",
+        Application.get_env(:kino_app, :rd_token),
+        &KinoTheatre.Doctor.check_rd/1
+      )
+
+    tmdb =
+      prompt_key(
+        "TMDB API key",
+        "https://www.themoviedb.org/settings/api",
+        Application.get_env(:kino_app, :tmdb_key),
+        &KinoTheatre.Doctor.check_tmdb/1
+      )
+
+    write_config_keys([{"RD_TOKEN", rd}, {"TMDB_API_KEY", tmdb}])
+    Config.load()
+
+    IO.puts(:stderr, "")
+
+    for {bin, why} <- [{"mpv", "required — plays the streams"}, {"fzf", "nicer pickers"}, {"chafa", "poster previews"}] do
+      mark = if System.find_executable(bin), do: IO.ANSI.format([:green, "  ✓ "]), else: IO.ANSI.format([:red, "  ✗ "])
+      IO.puts(:stderr, [mark, bin, IO.ANSI.format([:faint, " — #{why}", :reset])])
+    end
+
+    IO.puts(
+      :stderr,
+      "\n  saved to #{Config.path()}\n  optional extras (subtitles, Jackett, Jimaku) live in the same file.\n  all set — run: kino\n"
+    )
+  end
+
+  # Ask for one key, validate it live against the real service, loop on
+  # rejection. An existing key is shown masked (stars + its last characters)
+  # with an explicit enter-to-keep, so a rerun never forces re-entry.
+  defp prompt_key(name, url, existing, validate) do
+    IO.puts(:stderr, IO.ANSI.format(["  ", :bright, name, :reset, :faint, "  #{url}", :reset]))
+
+    if existing do
+      IO.puts(
+        :stderr,
+        IO.ANSI.format([
+          "  current: ",
+          :yellow,
+          mask(existing),
+          :reset,
+          :faint,
+          "  — press enter to keep it, or paste a new key",
+          :reset
+        ])
+      )
+    end
+
+    case IO.gets("  > ") do
+      :eof ->
+        die("setup cancelled")
+
+      line ->
+        case {String.trim(line), existing} do
+          {"", nil} ->
+            IO.puts(:stderr, IO.ANSI.format([:yellow, "  a key is required\n", :reset]))
+            prompt_key(name, url, existing, validate)
+
+          {"", key} ->
+            IO.puts(:stderr, IO.ANSI.format([:faint, "  ✓ keeping #{mask(key)}\n", :reset]))
+            key
+
+          {key, _} ->
+            IO.write(:stderr, "  checking… ")
+
+            case validate.(key) do
+              {:ok, detail} ->
+                IO.puts(:stderr, IO.ANSI.format([:green, "✓ ", :reset, detail, "\n"]))
+                key
+
+              {:error, reason} ->
+                IO.puts(:stderr, IO.ANSI.format([:red, "✗ #{reason}", :reset, " — try again\n"]))
+                prompt_key(name, url, existing, validate)
+            end
+        end
+    end
+  end
+
+  # Stars with the last few characters visible — enough to recognize which
+  # key it is without exposing it.
+  defp mask(key) when byte_size(key) > 8,
+    do: String.duplicate("*", 12) <> binary_part(key, byte_size(key) - 4, 4)
+
+  defp mask(_key), do: "************"
+
+  # Update KEY=VALUE lines in the config file in place (comments and other
+  # keys untouched); append keys that aren't there yet. Mode 600 — it holds
+  # secrets.
+  defp write_config_keys(pairs) do
+    path = Config.path()
+    File.mkdir_p!(Path.dirname(path))
+    lines = case File.read(path) do
+      {:ok, contents} -> String.split(contents, "\n")
+      _ -> ["# kino config — created by kino setup"]
+    end
+
+    updated =
+      Enum.reduce(pairs, lines, fn {key, value}, acc ->
+        line = "#{key}=#{value}"
+
+        if Enum.any?(acc, &String.starts_with?(String.trim_leading(&1), key <> "=")) do
+          Enum.map(acc, fn l ->
+            if String.starts_with?(String.trim_leading(l), key <> "="), do: line, else: l
+          end)
+        else
+          acc ++ [line]
+        end
+      end)
+
+    File.write!(path, Enum.join(updated, "\n"))
+    File.chmod(path, 0o600)
+  end
+
+  # ── doctor (health checks) ────────────────────────────────────────
+
+  defp doctor do
+    IO.puts(:stderr, "\nkino doctor — checking everything kino depends on…\n")
+    {results, healthy?} = KinoTheatre.Doctor.run()
+
+    for section <- [:binaries, :services] do
+      IO.puts(:stderr, IO.ANSI.format([:bright, "  #{section}", :reset]))
+
+      for {^section, name, status, detail} <- results do
+        {mark, color} =
+          case status do
+            :ok -> {"✓", :green}
+            :skip -> {"–", :faint}
+            :error -> {"✗", :red}
+          end
+
+        IO.puts(
+          :stderr,
+          IO.ANSI.format([
+            color,
+            "    #{mark} ",
+            :reset,
+            String.pad_trailing(name, 15),
+            :faint,
+            detail,
+            :reset
+          ])
+        )
+      end
+
+      IO.puts(:stderr, "")
+    end
+
+    {rows, cols} = tty_size()
+
+    IO.puts(
+      :stderr,
+      IO.ANSI.format([
+        :bright,
+        "  terminal",
+        :reset,
+        "\n    #{cols}×#{rows} · posters: #{Config.posters()} · skip: #{Config.skip()} · lang: #{Config.lang()}\n"
+      ])
+    )
+
+    if healthy? do
+      IO.puts(:stderr, IO.ANSI.format([:green, "  all good — happy watching\n", :reset]))
+    else
+      IO.puts(:stderr, IO.ANSI.format([:red, "  something's broken — fix the ✗ lines above\n", :reset]))
+      System.halt(1)
+    end
+  end
+
   # ── update (self-replace the standalone binary) ───────────────────
 
   defp update do
@@ -1562,13 +2046,15 @@ defmodule KinoTheatre.CLI do
 
     usage:
       kino                   open the interactive menu (Continue / Featured / Search)
-      kino watch "<title>"   [--auto] [--raw] [--backend apibay|nyaa|anime] [--limit N]
+      kino watch "<title>"   [--auto] [--binge] [--raw] [--backend apibay|nyaa|anime] [--limit N]
       kino download "<title>" same flow as watch, but saves the file (KINO_DOWNLOAD_DIR)
       kino featured          browse what's trending on TMDB and pick something
       kino continue          resume what you were watching
       kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]
       kino resolve <magnet>  [--season N] [--episode N]
       kino play <magnet|url> [--season N] [--episode N]
+      kino setup             interactive first-run wizard: keys in, validated live
+      kino doctor            check binaries, keys, and every service kino talks to
       kino config
       kino update            self-update the standalone binary to the latest release
 

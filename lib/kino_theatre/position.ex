@@ -42,8 +42,14 @@ defmodule KinoTheatre.Position do
 
   mp.add_periodic_timer(5, save)
   mp.register_event("shutdown", save)
+  -- "done" doubles as the watched marker (kino's Up Next / ✓ in pickers);
+  -- it parses as no-resume, so a rewatch starts from the beginning.
   mp.register_event("end-file", function(e)
-    if e and e.reason == "eof" then write(0) end
+    if e and e.reason == "eof" then
+      if opts.file == "" then return end
+      local f = io.open(opts.file, "w")
+      if f then f:write("done") f:close() end
+    end
   end)
   """
 
@@ -59,7 +65,9 @@ defmodule KinoTheatre.Position do
 
       key ->
         file = position_file(key)
-        args = ["--script=#{script_path()}", "--script-opts=kino-file=#{file}"]
+        # -append: a plain --script-opts= would replace the whole list and
+        # wipe other scripts' opts (e.g. the skip windows).
+        args = ["--script=#{script_path()}", "--script-opts-append=kino-file=#{file}"]
 
         case read(file) do
           nil -> {args, nil}
@@ -68,6 +76,33 @@ defmodule KinoTheatre.Position do
     end
   rescue
     _ -> {[], nil}
+  end
+
+  @doc "True when this title/episode was watched to the end (mpv hit eof)."
+  def finished?(ctx) do
+    with key when is_binary(key) <- key(ctx),
+         {:ok, body} <- File.read(position_file(key)) do
+      String.trim(body) == "done"
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  @doc """
+  When the position file was last written (posix seconds), or nil. The Lua
+  tracker saves every 5s while mpv runs — a stale mtime means mpv is gone.
+  """
+  def last_saved_at(ctx) do
+    with key when is_binary(key) <- key(ctx),
+         {:ok, %{mtime: mtime}} <- File.stat(position_file(key), time: :posix) do
+      mtime
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   @doc "Human-readable stored position for a play context, or nil."

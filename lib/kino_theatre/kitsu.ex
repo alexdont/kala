@@ -18,6 +18,15 @@ defmodule KinoTheatre.Kitsu do
     end
   end
 
+  @doc "The MyAnimeList id mapped to a Kitsu anime — the key AniSkip timestamps use."
+  def mal_id(kitsu_id) do
+    case get("/anime/#{kitsu_id}/mappings", "filter[externalSite]": "myanimelist/anime") do
+      {:ok, %{"data" => [%{"attributes" => %{"externalId" => id}} | _]}} -> {:ok, id}
+      {:ok, _} -> {:error, :no_mapping}
+      error -> error
+    end
+  end
+
   @doc "Search anime by text. Returns `{:ok, [anime]}` best-match first."
   def search(query) do
     case get("/anime", "filter[text]": query, "page[limit]": 5) do
