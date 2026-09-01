@@ -18,6 +18,7 @@ defmodule KinoTheatre.CLI do
       ["download" | rest] -> download(rest)
       ["featured" | _] -> featured()
       ["continue" | _] -> continue()
+      ["resume" | _] -> resume()
       ["resolve" | rest] -> resolve(rest)
       ["play" | rest] -> play(rest)
       ["config" | _] -> config()
@@ -1007,7 +1008,7 @@ defmodule KinoTheatre.CLI do
         Player.open(
           :mpv,
           stream.url,
-          await_subtitles(sub_task) ++ position_args(ctx) ++ KinoTheatre.Skip.script_args()
+          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
         )
 
         save_resume(ctx, source)
@@ -1106,6 +1107,27 @@ defmodule KinoTheatre.CLI do
         ])
       )
 
+      # The launch-time stinger alert gets wiped by this screen — repeat it
+      # here, where it stays visible for the whole watch. Cache-warm by the
+      # pre-launch task, so this never waits on TMDB.
+      case KinoTheatre.Skip.stinger_parts(ctx) do
+        [] ->
+          :ok
+
+        parts ->
+          IO.puts(
+            :stderr,
+            IO.ANSI.format([
+              :yellow,
+              "  🎬 #{KinoTheatre.Skip.stinger_label(parts)}",
+              :reset,
+              :faint,
+              " — worth staying through the credits\n",
+              :reset
+            ])
+          )
+      end
+
       episodic? = is_integer(ctx.episode)
 
       items =
@@ -1113,12 +1135,13 @@ defmodule KinoTheatre.CLI do
           if(episodic?, do: [{:next, "⏭  next episode"}], else: []),
           if(episodic?, do: [{:binge, "⚡  autoplay — chain next episodes"}], else: []),
           {:replay, "↻  replay"},
+          {:imdb, "★  rate on IMDb — open in browser"},
+          {:switch, "⇄  try another source"},
           if(episodic? and ctx.episode > 1, do: [{:previous, "⏮  previous episode"}], else: []),
           if(episodic?,
             do: [{:select, "☰  episodes — choose another"}],
             else: [{:select, "⌕  search — find something else"}]
           ),
-          {:imdb, "★  rate on IMDb — open in browser"},
           {:quit, "✕  quit"}
         ])
 
@@ -1128,6 +1151,7 @@ defmodule KinoTheatre.CLI do
           Process.put(:kino_binge, true)
           binge_wait(ctx)
         {:replay, _} -> replay(ctx, stream)
+        {:switch, _} -> switch_source(ctx)
         {:previous, _} -> play_adjacent(ctx, -1)
         {:select, _} -> reselect(ctx)
         {:imdb, _} ->
@@ -1144,7 +1168,8 @@ defmodule KinoTheatre.CLI do
     args =
       subtitle_args(ctx) ++
         KinoTheatre.Skip.window_args(ctx) ++
-        position_args(ctx) ++ KinoTheatre.Skip.script_args()
+        KinoTheatre.Skip.stinger_args(ctx) ++
+        position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
 
     Player.open(:mpv, stream.url, args)
     IO.puts(:stderr, "playing in mpv: #{stream.filename}")
@@ -1158,6 +1183,16 @@ defmodule KinoTheatre.CLI do
     ctx = %{ctx | episode: ctx.episode + delta}
     clear_screen()
     IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources…")
+    play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+  end
+
+  # Bad source (broken file, wrong audio, stutters): re-run the source flow
+  # for the same title/episode and pick a different release. Position memory
+  # is keyed by title, so the new source resumes at the same second — and
+  # track memory correctly resets (ids don't carry across releases).
+  defp switch_source(ctx) do
+    clear_screen()
+    IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources (close the old mpv yourself)…")
     play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
   end
 
@@ -1237,10 +1272,11 @@ defmodule KinoTheatre.CLI do
   # Position tracking + exact resume: mpv gets a tiny Lua script that saves
   # the playback position every 5s (crash-safe), keyed by title+episode so
   # switching sources resumes from the same spot.
-  defp position_args(nil), do: []
+  defp position_args(ctx, filename \\ nil)
+  defp position_args(nil, _filename), do: []
 
-  defp position_args(ctx) do
-    case KinoTheatre.Position.mpv_args(ctx) do
+  defp position_args(ctx, filename) do
+    case KinoTheatre.Position.mpv_args(ctx, filename) do
       {args, nil} ->
         args
 
@@ -1255,7 +1291,11 @@ defmodule KinoTheatre.CLI do
   defp start_subtitle_task(nil), do: nil
 
   defp start_subtitle_task(ctx),
-    do: Task.async(fn -> subtitle_args(ctx) ++ KinoTheatre.Skip.window_args(ctx) end)
+    do:
+      Task.async(fn ->
+        subtitle_args(ctx) ++
+          KinoTheatre.Skip.window_args(ctx) ++ KinoTheatre.Skip.stinger_args(ctx)
+      end)
 
   defp await_subtitles(nil), do: []
 
@@ -1398,6 +1438,28 @@ defmodule KinoTheatre.CLI do
     continue_entry(entry)
   end
 
+  # `kino resume`: straight back into the most recent thing — no picker.
+  defp resume do
+    unless Providers.any_configured?() do
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+    end
+
+    case KinoTheatre.Resume.all() do
+      [] ->
+        die("nothing to resume — play something with kino watch first")
+
+      [entry | _] ->
+        at =
+          case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+            nil -> ""
+            time -> " · at #{time}"
+          end
+
+        IO.puts(:stderr, "resuming #{entry["title"]}#{entry_ep(entry)}#{at}")
+        continue_entry(entry)
+    end
+  end
+
   defp continue_entry(entry) do
     rd_opts = rd_opts(entry["season"], entry["episode"])
     source = entry["source"]
@@ -1413,7 +1475,7 @@ defmodule KinoTheatre.CLI do
         Player.open(
           :mpv,
           stream.url,
-          await_subtitles(sub_task) ++ position_args(ctx) ++ KinoTheatre.Skip.script_args()
+          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
         )
         KinoTheatre.Resume.put(
           entry["type"],
@@ -2168,7 +2230,8 @@ defmodule KinoTheatre.CLI do
       kino watch "<title>"   [--auto] [--binge] [--raw] [--backend apibay|nyaa|anime] [--limit N]
       kino download "<title>" same flow as watch, but saves the file (KINO_DOWNLOAD_DIR)
       kino featured          browse what's trending on TMDB and pick something
-      kino continue          resume what you were watching
+      kino resume            instantly resume the last thing you watched
+      kino continue          pick from your watch history
       kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]
       kino resolve <magnet>  [--season N] [--episode N]
       kino play <magnet|url> [--season N] [--episode N]

@@ -33,7 +33,7 @@ defmodule KinoTheatre.Skip do
   -- Written by kino on every launch; do not edit.
   local options = require "mp.options"
   local msg = require "mp.msg"
-  local opts = { windows = "", mode = "ask" }
+  local opts = { windows = "", mode = "ask", stinger = "" }
   options.read_options(opts, "kino-skip")
 
   -- "start-end@episodelength;…" — the submitted episode length rides along
@@ -73,12 +73,16 @@ defmodule KinoTheatre.Skip do
   local overlay = mp.create_osd_overlay("ass-events")
   local active = nil
 
-  local function show_prompt(what)
+  local function show_prompt(what, credits)
     local label = what:gsub("[{}\\\\]", "")
+    local warn = ""
+    if credits and opts.stinger ~= "" then
+      warn = "  ⚠ post-credit scene!"
+    end
     overlay.data = "{\\\\an9\\\\fs30\\\\bord2\\\\shad1\\\\b1}  ⏭  Skip " ..
-      label .. " — hold TAB  "
+      label .. " — hold TAB" .. warn .. "  "
     overlay:update()
-    msg.info("offering skip: " .. what)
+    msg.info("offering skip: " .. what .. warn)
   end
 
   local function hide_prompt()
@@ -125,11 +129,28 @@ defmodule KinoTheatre.Skip do
     if not hit then return nil end
     local dur = nxt.time - ch.time
     if dur <= 0 or dur > 240 then return nil end
-    return { target = nxt.time, what = ch.title, key = "c" .. idx, chidx = idx }
+    local credits = title:find("credit") ~= nil or title:find("ending") ~= nil
+    return { target = nxt.time, what = ch.title, key = "c" .. idx, chidx = idx,
+             credits = credits }
+  end
+
+  -- Stinger reminder: as the runtime approaches the end, warn once that
+  -- there's a scene worth staying for (movies only; kino sets the opt from
+  -- TMDB's duringcreditsstinger/aftercreditsstinger keywords).
+  local stinger_warned = false
+  local function stinger_reminder(t)
+    if opts.stinger == "" or stinger_warned then return end
+    local dur = mp.get_property_number("duration")
+    if dur and dur > 600 and t > dur - 150 then
+      stinger_warned = true
+      mp.osd_message("kino: this movie has a post-credit scene — don't quit early", 6)
+      msg.info("stinger reminder shown (" .. opts.stinger .. ")")
+    end
   end
 
   mp.observe_property("time-pos", "number", function(_, t)
     if not t then return end
+    stinger_reminder(t)
     local zone = window_zone(t) or chapter_zone()
 
     if not zone then
@@ -145,7 +166,7 @@ defmodule KinoTheatre.Skip do
 
     if not active or active.key ~= zone.key then
       active = zone
-      show_prompt(zone.what)
+      show_prompt(zone.what, zone.credits)
     end
   end)
 
@@ -209,9 +230,66 @@ defmodule KinoTheatre.Skip do
     _ -> []
   end
 
+  @doc """
+  Post-credit stinger handling for movies: prints a terminal alert and, when
+  the skip script runs, passes the flags so the credits-skip button warns
+  and an end-of-runtime OSD reminder fires. Networked (one TMDB call) —
+  call from the async pre-launch task. [] for TV / no stingers / failure.
+  """
+  def stinger_args(ctx) do
+    case stinger_parts(ctx) do
+      [] ->
+        []
+
+      parts ->
+        IO.puts(:stderr, "🎬 stinger alert: #{stinger_label(parts)} — don't skip the credits!")
+
+        if Config.skip() == "off",
+          do: [],
+          else: ["--script-opts-append=kino-skip-stinger=#{Enum.join(parts, ",")}"]
+    end
+  end
+
+  @doc """
+  Which stingers a movie has: [] | ["during"] | ["after"] | ["during","after"].
+  Disk-cached, so the pre-launch task warms it and the Now Playing screen
+  reads it instantly.
+  """
+  def stinger_parts(%{type: "movie", tmdb_id: id}) when not is_nil(id) do
+    spec =
+      cached("stinger-#{id}", fn ->
+        case KinoTheatre.Tmdb.stingers(id) do
+          {false, false} ->
+            ""
+
+          {during, after_credits} ->
+            [{during, "during"}, {after_credits, "after"}]
+            |> Enum.filter(&elem(&1, 0))
+            |> Enum.map_join(",", &elem(&1, 1))
+        end
+      end)
+
+    if spec == "", do: [], else: String.split(spec, ",")
+  rescue
+    _ -> []
+  end
+
+  def stinger_parts(_ctx), do: []
+
+  @doc "\"during-credits and after-credits scenes\" — human label for stinger parts."
+  def stinger_label(parts) do
+    label =
+      Enum.map_join(parts, " and ", fn
+        "during" -> "during-credits"
+        "after" -> "after-credits"
+      end)
+
+    "#{label} #{if length(parts) > 1, do: "scenes", else: "scene"}"
+  end
+
   defp windows(%{anime: true, episode: ep} = ctx) when is_integer(ep) do
     title = ctx[:search_title] || ctx[:title]
-    cached(title, ep, fn -> fetch_windows(title, ep) end)
+    cached("#{title}-#{ep}", fn -> fetch_windows(title, ep) end)
   end
 
   defp windows(_ctx), do: ""
@@ -269,10 +347,10 @@ defmodule KinoTheatre.Skip do
   # "no data" is often just "no data yet".
   @empty_cache_max_age_s 24 * 3600
 
-  defp cached(title, ep, fetch) do
+  defp cached(cache_key, fetch) do
     dir = Path.join(System.tmp_dir!(), "kino-skip")
     File.mkdir_p!(dir)
-    key = :erlang.md5("#{title}-#{ep}") |> Base.encode16(case: :lower) |> binary_part(0, 16)
+    key = :erlang.md5(cache_key) |> Base.encode16(case: :lower) |> binary_part(0, 16)
     path = Path.join(dir, key)
 
     with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),

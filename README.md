@@ -110,7 +110,8 @@ KINO_AUTOPLAY=off
 | command | what it does |
 | --- | --- |
 | `kino watch "<title>"` | the whole flow: title → episode → source → mpv |
-| `kino continue` | resume the last thing you watched |
+| `kino resume` | instantly resume the last thing you watched |
+| `kino continue` | pick from your watch history |
 | `kino search "<query>"` | list raw sources (JSON when piped) |
 | `kino resolve <magnet>` | magnet → direct stream URL (JSON) |
 | `kino play <magnet\|url>` | resolve and launch mpv directly |

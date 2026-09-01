@@ -15,11 +15,35 @@ defmodule KinoTheatre.Position do
   @min_resume 30
 
   @script """
-  -- kino position tracker: persists time-pos so playback survives crashes.
+  -- kino position tracker: persists time-pos so playback survives crashes,
+  -- and remembers the selected subtitle/audio tracks per source.
   -- Written by kino on every launch; do not edit.
   local options = require "mp.options"
-  local opts = { file = "" }
+  local opts = { file = "", tracks = "" }
   options.read_options(opts, "kino")
+
+  -- Track memory: whenever the user switches subtitle or audio track, save
+  -- "sid aid" plus the media filename (ids are only meaningful for the same
+  -- file — kino checks the filename before restoring). Saves are gated on
+  -- file-loaded so teardown/no-track states can't clobber a real choice.
+  local ready = false
+  mp.register_event("file-loaded", function() ready = true end)
+  mp.register_event("end-file", function() ready = false end)
+
+  local function save_tracks()
+    if opts.tracks == "" or not ready then return end
+    local sid = mp.get_property("sid") or "no"
+    local aid = mp.get_property("aid") or "no"
+    local fname = mp.get_property("filename") or ""
+    local f = io.open(opts.tracks, "w")
+    if f then
+      f:write(sid .. " " .. aid .. "\\n" .. fname)
+      f:close()
+    end
+  end
+
+  mp.observe_property("sid", "native", save_tracks)
+  mp.observe_property("aid", "native", save_tracks)
 
   local function write(n)
     if opts.file == "" then return end
@@ -58,16 +82,23 @@ defmodule KinoTheatre.Position do
   where `resume_at` is a human-readable time when resuming, else nil.
   Best-effort: any failure returns `{[], nil}` — never breaks playback.
   """
-  def mpv_args(ctx) do
+  def mpv_args(ctx, filename \\ nil) do
     case key(ctx) do
       nil ->
         {[], nil}
 
       key ->
         file = position_file(key)
+        tracks = tracks_file(key)
+
         # -append: a plain --script-opts= would replace the whole list and
         # wipe other scripts' opts (e.g. the skip windows).
-        args = ["--script=#{script_path()}", "--script-opts-append=kino-file=#{file}"]
+        args =
+          [
+            "--script=#{script_path()}",
+            "--script-opts-append=kino-file=#{file}",
+            "--script-opts-append=kino-tracks=#{tracks}"
+          ] ++ track_args(tracks, filename)
 
         case read(file) do
           nil -> {args, nil}
@@ -76,6 +107,27 @@ defmodule KinoTheatre.Position do
     end
   rescue
     _ -> {[], nil}
+  end
+
+  # Restore "--sid=N --aid=N" only when the remembered tracks belong to this
+  # exact file — ids mean nothing on a different release. "no" (subtitles
+  # deliberately off) restores too.
+  defp track_args(tracks_path, filename) do
+    with true <- is_binary(filename),
+         {:ok, contents} <- File.read(tracks_path),
+         [ids, stored_name] <- String.split(contents, "\n", parts: 2),
+         true <- String.trim(stored_name) == filename,
+         [sid, aid] <- String.split(String.trim(ids), " ", parts: 2) do
+      ["--sid=#{sid}", "--aid=#{aid}"]
+    else
+      _ -> []
+    end
+  end
+
+  defp tracks_file(key) do
+    dir = Path.join(data_dir(), "tracks")
+    File.mkdir_p!(dir)
+    Path.join(dir, key)
   end
 
   @doc "True when this title/episode was watched to the end (mpv hit eof)."

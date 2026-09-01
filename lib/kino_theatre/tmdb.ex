@@ -39,15 +39,36 @@ defmodule KinoTheatre.Tmdb do
   no anime media type, so this is the discover equivalent). Returns
   `{:ok, results, more?}` like `trending/2`.
   """
+  @doc """
+  Post-credit stinger flags for a movie, from TMDB's community keywords:
+  `{during_credits?, after_credits?}`. `{false, false}` on any failure —
+  absence of a tag means "probably none", not certainty.
+  """
+  def stingers(movie_id) do
+    case get("/movie/#{movie_id}/keywords") do
+      {:ok, %{"keywords" => keywords}} ->
+        names = Enum.map(keywords, & &1["name"])
+        {"duringcreditsstinger" in names, "aftercreditsstinger" in names}
+
+      _ ->
+        {false, false}
+    end
+  end
+
   def discover_anime(page \\ 1) do
+    # Top airing NOW, not popular of all time: constrain to shows with an
+    # episode air date in the recent window (catches weekly long-runners
+    # and freshly started seasonals alike), ranked by current popularity.
+    # No vote floor — a vote floor structurally excludes new seasons.
+    today = Date.utc_today()
+
     with {:ok, %{"results" => results} = body} <-
            get("/discover/tv",
              with_genres: 16,
              with_original_language: "ja",
              sort_by: "popularity.desc",
-             # popularity alone floats low-vote fringe titles; a vote floor
-             # keeps the list mainstream without losing long-running classics
-             "vote_count.gte": 200,
+             "air_date.gte": Date.to_iso8601(Date.add(today, -28)),
+             "air_date.lte": Date.to_iso8601(Date.add(today, 7)),
              page: page
            ) do
       {:ok, Enum.map(results, &normalize(Map.put(&1, "media_type", "tv"))),
