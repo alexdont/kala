@@ -1153,12 +1153,16 @@ defmodule KinoTheatre.CLI do
   # Inside fzf's preview pipe chafa can't auto-detect terminal graphics, so
   # it silently degrades to colored block characters. Force the pixel
   # protocol by terminal identity instead; block symbols only as last resort.
+  # KINO_POSTERS=ascii swaps the whole thing for colored ASCII art —
+  # foreground glyphs only; =ascii-bg additionally paints cell backgrounds.
   defp poster_preview_script do
     term = System.get_env("TERM") || ""
     program = System.get_env("TERM_PROGRAM") || ""
 
     chafa_opts =
       cond do
+        Config.posters() == "ascii" -> "-f symbols -c full --symbols ascii --fg-only"
+        Config.posters() == "ascii-bg" -> "-f symbols -c full --symbols ascii"
         String.contains?(term, "foot") -> "-f sixels"
         String.contains?(term, "kitty") or String.contains?(term, "ghostty") -> "-f kitty"
         program in ["ghostty", "kitty", "WezTerm"] -> "-f kitty"
@@ -1168,8 +1172,116 @@ defmodule KinoTheatre.CLI do
     String.replace(@poster_preview, "CHAFA_OPTS", chafa_opts)
   end
 
+  # Poster pane sizing: scales with the live terminal (measured per picker,
+  # so resizing between menus just works), and below a minimum size posters
+  # are skipped entirely — a pane that small is clutter, not art.
+  @poster_min_cols 80
+  @poster_min_rows 14
+
+  # Live-resize floor, in PANE cells (fzf's <N(hidden) threshold compares
+  # the preview pane's own width, NOT the terminal's — measured empirically;
+  # a terminal-sized threshold here collapses the pane on normal displays).
+  @poster_min_pane 35
+
+  defp posters_fit? do
+    {rows, cols} = tty_size()
+    cols >= @poster_min_cols and rows >= @poster_min_rows
+  end
+
+  # Pane share per terminal-width tier; ASCII art gets more cells than
+  # pixels because it needs them to stay readable.
+  defp poster_tiers do
+    if Config.posters() in ["ascii", "ascii-bg"], do: {50, 44, 38}, else: {42, 36, 30}
+  end
+
+  defp poster_width do
+    {_rows, cols} = tty_size()
+    {wide, mid, narrow} = poster_tiers()
+
+    cond do
+      cols >= 160 -> wide
+      cols >= 120 -> mid
+      true -> narrow
+    end
+  end
+
+  # Live resize: Erlang spawns port children into their own session with no
+  # controlling terminal, so fzf never receives SIGWINCH — it can't notice a
+  # resize on its own (its `resize` event never fires under kino). The
+  # escript, which does stay on the tty, polls the size instead and pushes a
+  # recomputed layout + preview refresh into fzf over its --listen HTTP API.
+  defp start_resize_watcher(port_file, api_key) do
+    spawn(fn ->
+      case await_fzf_port(port_file, 50) do
+        nil -> :ok
+        port -> watch_resize(port, api_key, tty_size())
+      end
+    end)
+  end
+
+  # fzf picks a random port (--listen 0) and tells us via the start bind.
+  defp await_fzf_port(_file, 0), do: nil
+
+  defp await_fzf_port(file, tries) do
+    with {:ok, contents} <- File.read(file),
+         {port, _} <- Integer.parse(String.trim(contents)) do
+      port
+    else
+      _ ->
+        Process.sleep(100)
+        await_fzf_port(file, tries - 1)
+    end
+  end
+
+  defp watch_resize(port, api_key, last_size) do
+    Process.sleep(300)
+    size = tty_size()
+    if size != last_size, do: push_poster_layout(port, api_key)
+    watch_resize(port, api_key, size)
+  end
+
+  # Two pushes: clear-screen makes fzf re-measure the terminal (it renders
+  # at the stale size otherwise), then — once that redraw has landed — the
+  # recomputed pane layout plus a preview re-render at the true new size.
+  defp push_poster_layout(port, api_key) do
+    post_fzf(port, api_key, "clear-screen")
+    Process.sleep(150)
+
+    post_fzf(
+      port,
+      api_key,
+      "change-preview-window(right,#{poster_width()}%,border-left," <>
+        "<#{@poster_min_pane}(hidden))+refresh-preview"
+    )
+  end
+
+  defp post_fzf(port, api_key, command) do
+    Req.post("http://127.0.0.1:#{port}",
+      body: command,
+      headers: [{"x-api-key", api_key}],
+      retry: false,
+      receive_timeout: 2_000
+    )
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  # Rows/columns of the terminal fzf will draw on. Must be asked in-process:
+  # System.cmd children are spawned without a controlling terminal, so
+  # `stty size </dev/tty` fails there even when kino itself is at one.
+  defp tty_size do
+    case {:io.rows(), :io.columns()} do
+      {{:ok, rows}, {:ok, cols}} when rows > 0 and cols > 0 -> {rows, cols}
+      _ -> {24, 80}
+    end
+  end
+
   defp pick_fzf(items, describe, header, preview) do
-    preview? = preview != nil and System.find_executable("chafa") != nil
+    preview? =
+      preview != nil and Config.posters() != "off" and
+        System.find_executable("chafa") != nil and posters_fit?()
     if preview?, do: prune_posters()
 
     list =
@@ -1181,21 +1293,35 @@ defmodule KinoTheatre.CLI do
           else: "#{i}\t#{describe.(item)}"
       end)
 
+    path = Path.join(System.tmp_dir!(), "kino-fzf-#{System.os_time(:millisecond)}")
+    File.write!(path, list)
+    port_file = path <> "-port"
+
     fzf =
       if preview? do
-        ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse --height=~90% ) <>
-          ~s(--header="$2" --preview-window=right,28%,border-left --preview '#{poster_preview_script()}' < "$1")
+        # No --height: fullscreen on the alternate screen. An adaptive height
+        # (~N%) would cap the window — and thus the poster, which keeps its
+        # 2:3 aspect and is height-bound — at the list length.
+        # The port file path is baked in literally: fzf runs binds in its own
+        # $SHELL, where the outer sh's positional args don't exist.
+        ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse ) <>
+          ~s(--header="$2" ) <>
+          ~s[--preview-window='right,#{poster_width()}%,border-left,<#{@poster_min_pane}(hidden)' ] <>
+          ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})' ] <>
+          ~s(--preview '#{poster_preview_script()}' < "$1")
       else
         ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% --header="$2" < "$1")
       end
 
-    path = Path.join(System.tmp_dir!(), "kino-fzf-#{System.os_time(:millisecond)}")
-    File.write!(path, list)
+    api_key = Base.encode16(:crypto.strong_rand_bytes(12))
+    watcher = if preview?, do: start_resize_watcher(port_file, api_key)
 
     try do
       # fzf draws its UI on /dev/tty, reads the list from the redirected file,
       # and prints the chosen line on stdout — safe to run under System.cmd.
-      case System.cmd("sh", ["-c", fzf, "sh", path, header]) do
+      case System.cmd("sh", ["-c", fzf, "sh", path, header],
+             env: [{"FZF_API_KEY", api_key}]
+           ) do
         {line, 0} ->
           {i, _} = line |> String.trim() |> Integer.parse()
           Enum.at(items, i)
@@ -1204,7 +1330,9 @@ defmodule KinoTheatre.CLI do
           nil
       end
     after
+      if watcher, do: Process.exit(watcher, :kill)
       File.rm(path)
+      File.rm(port_file)
     end
   end
 

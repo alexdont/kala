@@ -83,6 +83,9 @@ RD_TOKEN=...
 TMDB_API_KEY=...
 # preferred audio language for ranking (dual/multi releases always rank normally)
 KINO_LANG=en
+# poster previews: auto (sharp pixel graphics), ascii (colored ASCII art),
+# ascii-bg (ASCII with painted backgrounds), off
+KINO_POSTERS=auto
 # optional: Jackett/Prowlarr (more indexers), OpenSubtitles, Jimaku
 ```
 

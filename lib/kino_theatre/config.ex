@@ -15,6 +15,7 @@ defmodule KinoTheatre.Config do
     "KINO_LANG" => :lang,
     "KINO_SUBS" => :subs_lang,
     "KINO_MPV_ARGS" => :mpv_args,
+    "KINO_POSTERS" => :posters,
     "KINO_DOWNLOAD_DIR" => :download_dir,
     "OPENSUBTITLES_API_KEY" => :opensubtitles_api_key,
     "OPENSUBTITLES_USERNAME" => :opensubtitles_username,
@@ -60,6 +61,19 @@ defmodule KinoTheatre.Config do
           off when off in ["off", "none", ""] -> nil
           lang -> lang
         end
+    end
+  end
+
+  @doc """
+  Poster preview style (KINO_POSTERS): "auto" (sharp pixel graphics via the
+  terminal's image protocol — the default), "ascii" (colored ASCII glyphs on
+  the terminal's own background), "ascii-bg" (ASCII with painted cell
+  backgrounds), or "off" (no poster previews).
+  """
+  def posters do
+    case Application.get_env(:kino_app, :posters) do
+      value when is_binary(value) -> value |> String.trim() |> String.downcase()
+      _ -> "auto"
     end
   end
 
