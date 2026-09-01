@@ -562,6 +562,37 @@ defmodule KinoTheatre.Sources do
   #      once a debrid provider has the file)
   # Releases tagged with a language other than the preferred one (default
   # English; dual/multi audio is fine) sink below everything else.
+  @doc """
+  Pick one page of sources to probe, sampled across resolution tiers.
+
+  Strictly taking the top of the ranking gives a wall of 2160p — someone
+  who wants 1080p would have to probe (and rate-limit) through every 4K
+  release before the first 1080p is even checked. Each page instead takes
+  the best few from each tier (3× 2160p, 3× 1080p, 1× 720p), backfilling
+  the remaining slots by overall rank. Returns `{page, rest}`; the page
+  keeps the overall ranking order, so cached/library releases still lead.
+  """
+  @page_quotas [{"2160p", 3}, {"1080p", 3}, {"720p", 1}]
+
+  def probe_page(sources, size) do
+    by_tier = Enum.group_by(sources, & &1.resolution)
+
+    quota =
+      @page_quotas
+      |> Enum.flat_map(fn {tier, n} -> by_tier |> Map.get(tier, []) |> Enum.take(n) end)
+      |> MapSet.new(& &1.hash)
+
+    backfill =
+      sources
+      |> Enum.reject(&MapSet.member?(quota, &1.hash))
+      |> Enum.take(max(size - MapSet.size(quota), 0))
+      |> MapSet.new(& &1.hash)
+
+    chosen = MapSet.union(quota, backfill)
+    {page, rest} = Enum.split_with(sources, &MapSet.member?(chosen, &1.hash))
+    {page, rest}
+  end
+
   defp score(source) do
     tier =
       case source.resolution do

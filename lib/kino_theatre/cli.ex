@@ -906,7 +906,9 @@ defmodule KinoTheatre.CLI do
     # Fetch subtitles in the background while sources are being probed, so
     # the network round-trips overlap instead of delaying the mpv launch.
     sub_task = sub_task || start_subtitle_task(ctx)
-    {page, rest} = Enum.split(sources, @probe_page)
+    # Quality-diverse page: some of every resolution tier gets probed up
+    # front, so picking 1080p never requires wading through all the 4Ks.
+    {page, rest} = Sources.probe_page(sources, @probe_page)
 
     IO.puts(
       :stderr,
