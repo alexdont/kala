@@ -35,11 +35,6 @@ defmodule KinoTheatre.Tmdb do
   end
 
   @doc """
-  Popular anime — Japanese-language animation TV, popularity-first (TMDB has
-  no anime media type, so this is the discover equivalent). Returns
-  `{:ok, results, more?}` like `trending/2`.
-  """
-  @doc """
   Post-credit stinger flags for a movie, from TMDB's community keywords:
   `{during_credits?, after_credits?}`. `{false, false}` on any failure —
   absence of a tag means "probably none", not certainty.
@@ -55,6 +50,11 @@ defmodule KinoTheatre.Tmdb do
     end
   end
 
+  @doc """
+  Top currently-airing anime — Japanese-language animation TV with an episode
+  in the recent air-date window, popularity-first. Returns
+  `{:ok, results, more?}` like `trending/2`.
+  """
   def discover_anime(page \\ 1) do
     # Top airing NOW, not popular of all time: constrain to shows with an
     # episode air date in the recent window (catches weekly long-runners

@@ -674,7 +674,13 @@ defmodule KinoTheatre.CLI do
   # guaranteed to play. Dedup by hash, keeping the library entry.
   defp with_library(query, found) do
     library = query |> RD.library() |> Enum.map(&Sources.account_source/1)
-    Enum.uniq_by(library ++ found, & &1.hash)
+
+    # Rank the merged list: library entries arrive in RD-account order (most
+    # recently added first), which looks like random tier/size jumble in the
+    # picker — the score puts them 4K-first, bigger-first like everything.
+    (library ++ found)
+    |> Enum.uniq_by(& &1.hash)
+    |> Sources.rank()
   end
 
   defp rd_opts(season, episode) do
@@ -972,7 +978,9 @@ defmodule KinoTheatre.CLI do
     end
 
     Providers.probe_sources(Enum.with_index(page), Keyword.put(rd_opts, :notify, notify))
-    playable = playable_so_far ++ collect_playable()
+    # Global re-rank on every page: appended pages would otherwise stack
+    # below earlier finds (a page-2 4K under a page-1 720p).
+    playable = Sources.rank_playable(playable_so_far ++ collect_playable())
 
     case {playable, rest} do
       {[], []} ->
@@ -983,20 +991,37 @@ defmodule KinoTheatre.CLI do
         probe_and_pick(rest, rd_opts, ctx, [], sub_task)
 
       {playable, rest} ->
-        items = if rest == [], do: playable, else: playable ++ [:more]
-
-        case pick(items, &describe_playable/1, "which source? (all checked + playable)") do
-          nil ->
-            System.halt(0)
-
-          :more ->
-            probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
-
-          {source, stream} ->
-            finish_play(ctx, source, stream, sub_task)
-        end
+        offer_playable(playable, rest, rd_opts, ctx, sub_task)
     end
   end
+
+  # The source picker over already-probed results. The probe session is
+  # remembered per title (process-local), so "try another source" from the
+  # post-play menu comes straight back here — every checked source still
+  # listed, "check more" continuing from the unprobed remainder — instead
+  # of re-searching and re-probing the same pages.
+  defp offer_playable(playable, rest, rd_opts, ctx, sub_task) do
+    save_probe_state(ctx, playable, rest, rd_opts)
+    items = if rest == [], do: playable, else: playable ++ [:more]
+
+    case pick(items, &describe_playable/1, "which source? (all checked + playable)") do
+      nil ->
+        System.halt(0)
+
+      :more ->
+        probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
+
+      {source, stream} ->
+        finish_play(ctx, source, stream, sub_task)
+    end
+  end
+
+  defp save_probe_state(nil, _playable, _rest, _rd_opts), do: :ok
+
+  defp save_probe_state(ctx, playable, rest, rd_opts),
+    do: Process.put({:kino_sources, sources_key(ctx)}, {playable, rest, rd_opts})
+
+  defp sources_key(ctx), do: {ctx.type, ctx.tmdb_id, ctx[:season], ctx[:episode]}
 
   defp finish_play(ctx, source, stream, sub_task) do
     case Process.get(:kino_mode, :play) do
@@ -1192,8 +1217,20 @@ defmodule KinoTheatre.CLI do
   # track memory correctly resets (ids don't carry across releases).
   defp switch_source(ctx) do
     clear_screen()
-    IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources (close the old mpv yourself)…")
-    play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+
+    case ctx && Process.get({:kino_sources, sources_key(ctx)}) do
+      {playable, rest, rd_opts} ->
+        IO.puts(
+          :stderr,
+          "#{playing_desc(ctx)} — every source you already checked (close the old mpv yourself)"
+        )
+
+        offer_playable(playable, rest, rd_opts, ctx, start_subtitle_task(ctx))
+
+      _ ->
+        IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources (close the old mpv yourself)…")
+        play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+    end
   end
 
   defp reselect(ctx) do
@@ -1381,7 +1418,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp describe_playable(:more), do: "⋯ check more sources"
-  defp describe_playable({source, stream}), do: describe(source) <> provider_tag(stream)
+  defp describe_playable({source, stream}), do: describe(source, stream)
 
   defp provider_tag(%{provider: :torbox}), do: "  ⚡TB"
   defp provider_tag(_stream), do: ""
@@ -1822,23 +1859,70 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp describe(s) do
+  # Everything that decides trust leads in fixed-width columns, so the eye
+  # never has to parse release names:
+  #   ★ 4K    15.9GB  CAM  1322s  RD  Name…  [h265 · …]
+  # seeders "—" = library/cached copies (no swarm involved, count unknown);
+  # RD/TB = which debrid provider serves this stream (probed rows only).
+  defp describe(s), do: describe(s, nil)
+
+  defp describe(s, stream) do
+    # ⚡ is a double-width glyph in most terminals; ★ is single-width — pad
+    # so every prefix occupies 3 terminal cells and the columns line up.
     prefix =
       case Map.get(s, :cached) do
-        :library -> "★ "
+        :library -> "★  "
         true -> "⚡ "
-        _ -> ""
+        _ -> "   "
       end
 
+    res =
+      case s.resolution do
+        "2160p" -> "4K"
+        nil -> "?"
+        other -> other
+      end
+
+    size = String.replace(s.size_human || "?", " ", "")
     lang = Map.get(s, :lang)
+    cam? = s.source == "CAM"
+    # Library/cached copies aren't "0 seeders" — they're already stored on
+    # the debrid side, the safest thing on the list: ✓ instead of a count.
+    seeders =
+      cond do
+        s.seeders && s.seeders > 0 -> "#{s.seeders}s"
+        Map.get(s, :cached) in [:library, true] -> "✓"
+        true -> "0s"
+      end
 
-    quality =
-      [s.resolution, s.codec, s.audio, s.source, lang && "lang:#{lang}", Map.get(s, :provider)]
+    debrid =
+      case stream && Map.get(stream, :provider) do
+        :torbox -> "TB"
+        :rd -> "RD"
+        _ -> if Map.get(s, :cached) in [:library, true], do: "RD", else: ""
+      end
+
+    # BluRay/WEB/HDTV granularity stays in the details ("HD" alone doesn't
+    # say remux vs webrip); CAM there would just repeat the column.
+    details =
+      [s.codec, s.audio, !cam? && s.source, Map.get(s, :langs) in [nil, []] && lang && "lang:#{lang}", Map.get(s, :provider)]
       |> Enum.reject(&(&1 in [nil, false]))
-      |> Enum.join(" ")
+      |> Enum.join(" · ")
 
-    "#{prefix}#{s.name}  [#{s.size_human} · #{s.seeders} seeders" <>
-      if(quality == "", do: "]", else: " · #{quality}]")
+    langs = Map.get(s, :langs) || []
+    lang_suffix = if langs == [], do: "", else: "  " <> Enum.join(langs, "\u00b7")
+
+    prefix <>
+      String.pad_trailing(res, 6) <>
+      String.pad_trailing(size, 9) <>
+      String.pad_trailing(if(cam?, do: "CAM", else: "HD"), 4) <>
+      String.pad_trailing(seeders, 6) <>
+      String.pad_trailing(debrid, 3) <>
+      truncate(s.name, 52) <> lang_suffix <> "  [#{details}]"
+  end
+
+  defp truncate(name, max) do
+    if String.length(name) > max, do: String.slice(name, 0, max - 1) <> "…", else: name
   end
 
   # ── resolve / play ────────────────────────────────────────────────

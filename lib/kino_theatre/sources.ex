@@ -348,6 +348,33 @@ defmodule KinoTheatre.Sources do
       size: torrentio_size(title)
     })
     |> Map.put(:cached, cached)
+    |> Map.put(:langs, torrentio_langs(title))
+  end
+
+  # Torrentio's third title line carries audio languages as flag emoji
+  # ("🇬🇧 / 🇮🇹") — parsed server-side from the actual file/track lists, so
+  # it's more reliable than filename regexes. Flags are regional-indicator
+  # pairs; map country → language code.
+  @flag_langs %{
+    "GB" => "en", "US" => "en", "IT" => "it", "ES" => "es", "MX" => "es",
+    "FR" => "fr", "DE" => "de", "RU" => "ru", "JP" => "ja", "KR" => "ko",
+    "CN" => "zh", "TW" => "zh", "BR" => "pt", "PT" => "pt", "PL" => "pl",
+    "NL" => "nl", "SE" => "sv", "NO" => "no", "DK" => "da", "FI" => "fi",
+    "GR" => "el", "TR" => "tr", "SA" => "ar", "AE" => "ar", "IL" => "he",
+    "IN" => "hi", "TH" => "th", "VN" => "vi", "UA" => "uk", "RO" => "ro",
+    "BG" => "bg", "RS" => "sr", "HR" => "hr", "CZ" => "cs", "SK" => "sk",
+    "HU" => "hu", "ID" => "id", "MY" => "ms", "PH" => "tl", "LT" => "lt",
+    "LV" => "lv", "EE" => "et"
+  }
+
+  defp torrentio_langs(title) do
+    ~r/[\x{1F1E6}-\x{1F1FF}]{2}/u
+    |> Regex.scan(title)
+    |> Enum.map(fn [flag] ->
+      country = flag |> String.to_charlist() |> Enum.map(&(&1 - 0x1F1E6 + ?A)) |> List.to_string()
+      Map.get(@flag_langs, country, String.downcase(country))
+    end)
+    |> Enum.uniq()
   end
 
   defp torrentio_int(title, regex) do
@@ -524,7 +551,10 @@ defmodule KinoTheatre.Sources do
     {"es", ~r/\b(spanish|espanol|castellano|latino|esp)\b/i},
     {"fr", ~r/\b(french|truefrench|vostfr|vff|vfq|vf)\b/i},
     {"de", ~r/\b(german|deutsch)\b/i},
-    {"ru", ~r/\b(rus|russian)\b/i},
+    # MVO/AVO/DVO are Russian voice-over markers; LostFilm/NewStudio/HDRezka
+    # are the big Russian dub groups (their releases often have no Cyrillic
+    # in the filename).
+    {"ru", ~r/\b(rus|russian|lostfilm|newstudio|hdrezka|mvo|avo|dvo)\b/i},
     {"hi", ~r/\b(hindi)\b/i},
     {"multi", ~r/\b(multi|dual)\b/i}
   ]
@@ -593,6 +623,12 @@ defmodule KinoTheatre.Sources do
     {page, rest}
   end
 
+  @doc false
+  def rank(sources), do: Enum.sort_by(sources, &score/1, :desc)
+
+  @doc false
+  def rank_playable(pairs), do: Enum.sort_by(pairs, fn {source, _stream} -> score(source) end, :desc)
+
   defp score(source) do
     tier =
       case source.resolution do
@@ -609,18 +645,45 @@ defmodule KinoTheatre.Sources do
         _ -> 0
       end
 
+    # A cam is never the pick when a proper release exists at the same
+    # resolution: half-tier penalty sinks cams below every proper release
+    # in their tier (still above the tier below — a 4K cam beats nothing
+    # into 1080p territory it doesn't deserve, and cams stay selectable).
+    cam_penalty = if source.source == "CAM", do: -600_000_000_000_000, else: 0
+
     # ~1PB per tier step keeps tiers dominant over any real file size.
-    cached_boost + lang_penalty(source) + tier * 1_000_000_000_000_000 + (source.size || 0)
+    cached_boost + lang_score(source) + cam_penalty +
+      tier * 1_000_000_000_000_000 + (source.size || 0)
   end
 
-  defp lang_penalty(source) do
+  # Wrong-language releases sink far below everything. With a non-English
+  # preference (KINO_LANG=ru etc.), releases explicitly tagged with that
+  # language get a half-tier boost — dubs float above untagged (≈ English)
+  # releases inside each resolution tier — and multi/dual gets half that.
+  # An English preference keeps the neutral behavior: untagged already is
+  # English in practice, so there's nothing to boost over.
+  defp lang_score(source) do
     preferred = KinoTheatre.Config.lang()
+    langs = Map.get(source, :langs) || []
 
-    case Map.get(source, :lang) do
-      nil -> 0
-      "multi" -> 0
-      ^preferred -> 0
-      _ -> -10_000_000_000_000_000
+    cond do
+      # Torrentio's parsed language list is authoritative when present.
+      langs != [] and preferred in langs and preferred != "en" ->
+        if length(langs) == 1, do: 500_000_000_000_000, else: 250_000_000_000_000
+
+      langs != [] and preferred in langs ->
+        0
+
+      langs != [] ->
+        -10_000_000_000_000_000
+
+      true ->
+        case Map.get(source, :lang) do
+          nil -> 0
+          "multi" -> if preferred == "en", do: 0, else: 250_000_000_000_000
+          ^preferred -> if preferred == "en", do: 0, else: 500_000_000_000_000
+          _ -> -10_000_000_000_000_000
+        end
     end
   end
 
@@ -656,7 +719,7 @@ defmodule KinoTheatre.Sources do
       {"BluRay", ~r/blu-?ray|bdrip|brrip|bd\b/i},
       {"WEB", ~r/web-?dl|webrip|\bweb\b/i},
       {"HDTV", ~r/hdtv/i},
-      {"CAM", ~r/\bcam\b|camrip|hdcam|telesync/i}
+      {"CAM", ~r/\bcam\b|camrip|hd-?cam|telesync|hd-?ts|\bts\b|telecine|hq-?cam/i}
     ]
   end
 
