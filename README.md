@@ -55,6 +55,16 @@ curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_lin
 chmod +x kino && mkdir -p ~/.local/bin && mv kino ~/.local/bin/
 ```
 
+**Windows** — use WSL2 (the built-in Ubuntu console; Windows 11 or updated
+Windows 10, so mpv opens as a regular window via WSLg). Then it's exactly the
+Linux install:
+
+```sh
+sudo apt install -y mpv fzf chafa
+curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_linux_x86_64
+chmod +x kino && mkdir -p ~/.local/bin && mv kino ~/.local/bin/
+```
+
 **macOS (Apple Silicon)** — untested build, feedback welcome:
 
 ```sh
