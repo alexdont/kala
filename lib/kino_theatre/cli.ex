@@ -31,8 +31,54 @@ defmodule KinoTheatre.CLI do
 
   # ── main menu (bare `kino` at a terminal) ─────────────────────────
 
+  # ASCII-art title over the main menu (figlet "Slant Relief", pre-rendered
+  # and kerned, so no figlet install is needed). Slanted strokes lit in a
+  # marquee red→gold gradient over a dim gray carved-relief ground.
+  @banner [
+    "__/\\\\\\________/\\\\\\_ __/\\\\\\\\\\\\\\\\\\\\\\_ __/\\\\\\\\\\_____/\\\\\\_ _______/\\\\\\\\\\______        ",
+    " _\\/\\\\\\_____/\\\\\\//__ _\\/////\\\\\\///__ _\\/\\\\\\\\\\\\___\\/\\\\\\_ _____/\\\\\\///\\\\\\____       ",
+    "  _\\/\\\\\\__/\\\\\\//_____ _____\\/\\\\\\_____ _\\/\\\\\\/\\\\\\__\\/\\\\\\_ ___/\\\\\\/__\\///\\\\\\__      ",
+    "   _\\/\\\\\\\\\\\\//\\\\\\_____ _____\\/\\\\\\_____ _\\/\\\\\\//\\\\\\_\\/\\\\\\_ __/\\\\\\______\\//\\\\\\_     ",
+    "    _\\/\\\\\\//_\\//\\\\\\____ _____\\/\\\\\\_____ _\\/\\\\\\\\//\\\\\\\\/\\\\\\_ _\\/\\\\\\_______\\/\\\\\\_    ",
+    "     _\\/\\\\\\____\\//\\\\\\___ _____\\/\\\\\\_____ _\\/\\\\\\_\\//\\\\\\/\\\\\\_ _\\//\\\\\\______/\\\\\\__   ",
+    "      _\\/\\\\\\_____\\//\\\\\\__ _____\\/\\\\\\_____ _\\/\\\\\\__\\//\\\\\\\\\\\\_ __\\///\\\\\\__/\\\\\\____  ",
+    "       _\\/\\\\\\______\\//\\\\\\_ __/\\\\\\\\\\\\\\\\\\\\\\_ _\\/\\\\\\___\\//\\\\\\\\\\_ ____\\///\\\\\\\\\\/_____ ",
+    "        _\\///________\\///__ _\\///////////__ _\\///_____\\/////__ ______\\/////_______"
+  ]
+  @banner_gradient [196, 202, 208, 214, 214, 220, 220, 226, 226]
+  @banner_shadow 240
+
+  defp print_banner do
+    {_rows, cols} = tty_size()
+
+    if cols >= 88 do
+      IO.puts(:stderr, "")
+
+      for {line, color} <- Enum.zip(@banner, @banner_gradient) do
+        IO.puts(:stderr, "  " <> colorize_banner(line, color))
+      end
+
+      IO.puts(
+        :stderr,
+        IO.ANSI.format([:faint, :italic, "                               · your terminal cinema ·", :reset])
+      )
+    end
+  end
+
+  defp colorize_banner(line, color) do
+    line
+    |> String.graphemes()
+    |> Enum.map_join(fn
+      " " -> " "
+      "_" -> IO.ANSI.color(@banner_shadow) <> "_"
+      stroke -> IO.ANSI.color(color) <> stroke
+    end)
+    |> Kernel.<>(IO.ANSI.reset())
+  end
+
   defp main_menu do
     clear_screen()
+    print_banner()
     IO.puts(:stderr, greeting())
     print_update_status()
 
