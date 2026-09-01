@@ -32,6 +32,7 @@ defmodule KinoTheatre.CLI do
   # ── main menu (bare `kino` at a terminal) ─────────────────────────
 
   defp main_menu do
+    clear_screen()
     IO.puts(:stderr, greeting())
     print_update_status()
 
@@ -74,29 +75,49 @@ defmodule KinoTheatre.CLI do
     end
   end
 
+  @weekdays ~w(Monday Tuesday Wednesday Thursday Friday Saturday Sunday)
+  @adjectives ~w(beautiful lovely wonderful cozy splendid fine quiet)
+
   defp greeting do
     user = System.get_env("USER") || System.get_env("USERNAME") || "you"
-
-    {_, {hour, _, _}} = :calendar.local_time()
+    {date, {hour, minute, _}} = :calendar.local_time()
 
     hello =
       cond do
-        hour < 5 -> "up late"
-        hour < 12 -> "good morning"
-        hour < 18 -> "good afternoon"
-        true -> "good evening"
+        hour < 5 -> "Good Night"
+        hour < 12 -> "Good Morning"
+        hour < 17 -> "Good Afternoon"
+        hour < 22 -> "Good Evening"
+        true -> "Good Night"
       end
+
+    {h12, ampm} = if hour >= 12, do: {hour - 12, "PM"}, else: {hour, "AM"}
+    h12 = if h12 == 0, do: 12, else: h12
+    day = Enum.at(@weekdays, :calendar.day_of_the_week(date) - 1)
 
     IO.ANSI.format([
       "\n  🍿 ",
       :bright,
-      "kino",
+      hello,
       :reset,
-      " — #{hello}, ",
+      ", ",
+      :bright,
       :cyan,
       user,
       :reset,
-      "! what are we watching?\n"
+      ".\n     It's ",
+      :yellow,
+      "#{h12}:#{pad2(minute)} #{ampm}",
+      :reset,
+      " on a ",
+      :magenta,
+      Enum.random(@adjectives),
+      :reset,
+      " ",
+      :green,
+      day,
+      :reset,
+      "!\n"
     ])
   end
 
@@ -115,6 +136,11 @@ defmodule KinoTheatre.CLI do
 
   # True when stdout is a terminal (a human), false when piped (a frontend).
   defp tty?, do: IO.ANSI.enabled?()
+
+  # Full-screen feel (mov-cli style): each menu screen replaces what came
+  # before instead of stacking under the log noise. Wipes the visible screen
+  # and the scrollback, then homes the cursor. Only ever called on a tty.
+  defp clear_screen, do: IO.write(:stderr, "\e[2J\e[3J\e[H")
 
   # ── search ────────────────────────────────────────────────────────
 
@@ -712,6 +738,93 @@ defmodule KinoTheatre.CLI do
         Player.open(:mpv, stream.url, await_subtitles(sub_task) ++ position_args(ctx))
         save_resume(ctx, source)
         IO.puts(:stderr, "playing in mpv: #{stream.filename}")
+        post_play_menu(ctx, stream)
+    end
+  end
+
+  # ── post-play controls (mov-cli style) ────────────────────────────
+  # mpv runs detached, so instead of exiting we stay on a control screen
+  # while the video plays: chain into the next episode, replay, go back to
+  # picking, or quit. Esc/quit leaves mpv running.
+
+  defp post_play_menu(nil, _stream), do: :ok
+
+  defp post_play_menu(ctx, stream) do
+    if tty?() do
+      clear_screen()
+
+      IO.puts(
+        :stderr,
+        IO.ANSI.format([
+          "\n  ▶ ",
+          :bright,
+          "Now Playing",
+          :reset,
+          ": ",
+          :cyan,
+          playing_desc(ctx),
+          :reset,
+          "\n"
+        ])
+      )
+
+      episodic? = is_integer(ctx.episode)
+
+      items =
+        List.flatten([
+          if(episodic?, do: [{:next, "⏭  next episode"}], else: []),
+          {:replay, "↻  replay"},
+          if(episodic? and ctx.episode > 1, do: [{:previous, "⏮  previous episode"}], else: []),
+          if(episodic?,
+            do: [{:select, "☰  episodes — choose another"}],
+            else: [{:select, "⌕  search — find something else"}]
+          ),
+          {:quit, "✕  quit"}
+        ])
+
+      case pick(items, &elem(&1, 1), "what next?") do
+        {:next, _} -> play_adjacent(ctx, 1)
+        {:replay, _} -> replay(ctx, stream)
+        {:previous, _} -> play_adjacent(ctx, -1)
+        {:select, _} -> reselect(ctx)
+        _ -> System.halt(0)
+      end
+    end
+  end
+
+  # Same URL again; position args resume from wherever the tracker last
+  # saved, so "replay" doubles as "reopen where I was" after closing mpv.
+  defp replay(ctx, stream) do
+    Player.open(:mpv, stream.url, subtitle_args(ctx) ++ position_args(ctx))
+    IO.puts(:stderr, "playing in mpv: #{stream.filename}")
+    post_play_menu(ctx, stream)
+  end
+
+  # Next/previous episode: rebuild the play context with episode ± 1 and
+  # rerun the full source flow (which respects --auto and re-enters this
+  # menu after launch — that's the binge loop).
+  defp play_adjacent(ctx, delta) do
+    ctx = %{ctx | episode: ctx.episode + delta}
+    clear_screen()
+    IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources…")
+    play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+  end
+
+  defp reselect(ctx) do
+    clear_screen()
+
+    if is_integer(ctx.episode) do
+      play_title(%{type: ctx.type, id: ctx.tmdb_id, title: ctx.title, year: nil})
+    else
+      menu_search()
+    end
+  end
+
+  defp playing_desc(ctx) do
+    cond do
+      ctx.season && ctx.episode -> "#{ctx.title} S#{pad2(ctx.season)}E#{pad2(ctx.episode)}"
+      ctx.episode -> "#{ctx.title} · Ep #{ctx.episode}"
+      true -> ctx.title
     end
   end
 
@@ -823,7 +936,20 @@ defmodule KinoTheatre.CLI do
   defp save_resume(nil, _source), do: :ok
 
   defp save_resume(ctx, source) do
-    entry = %{
+    entry =
+      ctx_entry(ctx)
+      |> Map.merge(%{
+        "source" => %{"name" => source.name, "magnet" => source.magnet, "hash" => source.hash},
+        "updated_at" => System.os_time(:second)
+      })
+
+    KinoTheatre.Resume.put(ctx.type, ctx.tmdb_id, entry)
+  end
+
+  # A ctx as a resume-style entry map — the inverse of entry_ctx/1, so the
+  # post-play menu can feed play contexts back into the entry-based flow.
+  defp ctx_entry(ctx) do
+    %{
       "type" => ctx.type,
       "tmdb_id" => ctx.tmdb_id,
       "season" => ctx.season,
@@ -831,12 +957,8 @@ defmodule KinoTheatre.CLI do
       "title" => ctx.title,
       "poster_path" => ctx[:poster_path],
       "anime" => ctx[:anime] || false,
-      "search_title" => ctx[:search_title],
-      "source" => %{"name" => source.name, "magnet" => source.magnet, "hash" => source.hash},
-      "updated_at" => System.os_time(:second)
+      "search_title" => ctx[:search_title]
     }
-
-    KinoTheatre.Resume.put(ctx.type, ctx.tmdb_id, entry)
   end
 
   defp describe_playable(:more), do: "⋯ check more sources"
@@ -905,6 +1027,7 @@ defmodule KinoTheatre.CLI do
         )
 
         IO.puts(:stderr, "playing in mpv: #{stream.filename}")
+        post_play_menu(ctx, stream)
 
       {:error, reason} ->
         Task.shutdown(sub_task, :brutal_kill)
@@ -914,18 +1037,18 @@ defmodule KinoTheatre.CLI do
           "last source unavailable (#{unplayable_reason(reason)}) — searching fresh sources…"
         )
 
-        continue_fallback(entry, rd_opts)
+        play_entry(entry, rd_opts)
     end
   end
 
-  # The remembered source died — re-run the normal search for the remembered
-  # movie/episode so the user can pick a fresh one.
-  defp continue_fallback(entry, rd_opts) do
+  # Run the full source flow for an entry map (a resume entry, or a ctx via
+  # ctx_entry/1): fetch details, route anime vs standard, probe, pick, play.
+  defp play_entry(entry, rd_opts) do
     type = entry["type"]
 
     unless Tmdb.configured?() do
-      die("the saved source is gone, and searching for a fresh one needs " <>
-        "TMDB_API_KEY — add it to #{Config.path()} or the environment")
+      die("searching for sources needs TMDB_API_KEY — " <>
+        "add it to #{Config.path()} or the environment")
     end
 
     details =
