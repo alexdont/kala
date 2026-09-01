@@ -27,12 +27,66 @@ defmodule KinoTheatre.Kitsu do
     end
   end
 
-  @doc "Search anime by text. Returns `{:ok, [anime]}` best-match first."
+  @doc """
+  Search anime by text. Returns `{:ok, [anime]}` best-match first.
+
+  AniList is the primary (sub-second, reliable, per-season entries with
+  romaji titles and airing-aware episode counts); Kitsu — slow at the best
+  of times and 500ing outright for some queries — is only the fallback.
+  AniList entries carry no Kitsu id, so the AniDB mapping is unavailable
+  for them and tracker search uses the release title (works fine).
+  """
   def search(query) do
+    case anilist_search(query) do
+      {:ok, [_ | _] = results} -> {:ok, results}
+      _ -> kitsu_search(query)
+    end
+  end
+
+  defp kitsu_search(query) do
     case get("/anime", "filter[text]": query, "page[limit]": 5) do
       {:ok, %{"data" => data}} -> {:ok, Enum.map(data, &to_anime/1)}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @anilist_query """
+  query($s:String){Page(perPage:6){media(search:$s,type:ANIME){
+    id episodes format seasonYear title{romaji english} coverImage{medium}
+    nextAiringEpisode{episode}}}}
+  """
+
+  defp anilist_search(query) do
+    case Req.post("https://graphql.anilist.co",
+           json: %{query: @anilist_query, variables: %{s: query}},
+           retry: false,
+           receive_timeout: 8_000
+         ) do
+      {:ok, %{status: 200, body: %{"data" => %{"Page" => %{"media" => media}}}}} ->
+        {:ok, Enum.map(media, &from_anilist/1)}
+
+      _ ->
+        {:error, :anilist_failed}
+    end
+  end
+
+  # Same shape as to_anime/1 but with no Kitsu id: episode counts come from
+  # AniList (or aired-so-far for airing shows), and the AniDB mapping is
+  # simply unavailable (source search degrades to text — acceptable).
+  defp from_anilist(m) do
+    airing = get_in(m, ["nextAiringEpisode", "episode"])
+    count = m["episodes"] || (airing && airing - 1)
+    romaji = get_in(m, ["title", "romaji"])
+
+    %{
+      id: nil,
+      title: romaji,
+      titles: %{"en_jp" => romaji, "en" => get_in(m, ["title", "english"])},
+      episode_count: count,
+      subtype: m["format"],
+      year: m["seasonYear"] && Integer.to_string(m["seasonYear"]),
+      poster: get_in(m, ["coverImage", "medium"])
+    }
   end
 
   @doc """
@@ -96,7 +150,17 @@ defmodule KinoTheatre.Kitsu do
     # kitsu.io is reliable but slow (~3-5s/request). Use a generous timeout so
     # a slow-but-fine response doesn't trip the retry backoff, which would
     # compound two calls into a 20-30s hang.
-    req = Req.new(base_url: @base, headers: @headers, retry: :transient, max_retries: 2, receive_timeout: 30_000)
+    # One retry only, logged at debug: Kitsu 500s are routine and the
+    # AniList fallback covers them — warnings would just spam the CLI.
+    req =
+      Req.new(
+        base_url: @base,
+        headers: @headers,
+        retry: :transient,
+        max_retries: 1,
+        retry_log_level: :debug,
+        receive_timeout: 15_000
+      )
 
     case Req.get(req, url: path, params: params) do
       {:ok, %{status: 200, body: body}} -> {:ok, body}

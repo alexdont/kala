@@ -7,7 +7,7 @@ defmodule KinoTheatre.CLI do
   a human-readable listing instead.
   """
 
-  alias KinoTheatre.{Config, Kitsu, Player, RD, Sources, Tmdb}
+  alias KinoTheatre.{Config, Kitsu, Player, Providers, RD, Sources, Tmdb}
 
   @backends %{"apibay" => :apibay, "nyaa" => :nyaa, "anime" => :anime}
 
@@ -81,7 +81,7 @@ defmodule KinoTheatre.CLI do
   defp main_menu do
     # First run with no keys: go straight into the wizard instead of letting
     # every menu entry die with "RD_TOKEN is not set".
-    unless RD.configured?() and Tmdb.configured?() do
+    unless Providers.any_configured?() and Tmdb.configured?() do
       IO.puts(:stderr, "\n  missing keys — let's set you up first")
       setup()
     end
@@ -414,8 +414,8 @@ defmodule KinoTheatre.CLI do
   defp run_watch(argv) do
     {opts, query} = watch_args(argv)
 
-    unless RD.configured?() do
-      die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
+    unless Providers.any_configured?() do
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
     end
 
     if opts[:auto], do: Process.put(:kino_auto, true)
@@ -535,7 +535,7 @@ defmodule KinoTheatre.CLI do
 
   defp play_anime(title, details) do
     IO.puts(:stderr, "anime — matching on Kitsu for episode list + AniDB id…")
-    kitsu = kitsu_lookup(title.title)
+    kitsu = kitsu_pick(title.title)
     search_title = (kitsu.anime && kitsu.anime.title) || title.title
 
     case {title.type, kitsu.episodes} do
@@ -579,24 +579,66 @@ defmodule KinoTheatre.CLI do
     )
   end
 
-  defp kitsu_lookup(name) do
+  # Anime seasons live as separate Kitsu entries ("Attack on Titan",
+  # "… Season 2", "… Final Season") — so the entry picker IS the season
+  # selector. Auto-picks when there's only one match.
+  defp kitsu_pick(name) do
     case Kitsu.search(name) do
-      {:ok, [anime | _]} ->
-        anidb =
-          case Kitsu.anidb_id(anime.id) do
-            {:ok, id} -> id
-            _ -> nil
-          end
+      {:ok, []} ->
+        %{anime: nil, episodes: [], anidb: nil}
 
-        %{anime: anime, episodes: kitsu_episode_list(anime), anidb: anidb}
+      {:ok, [only]} ->
+        kitsu_selected(only)
+
+      {:ok, results} ->
+        # Chronological, not by title — "Part 2"/"Final Season" naming makes
+        # alphabetical order useless; year is the real season order. Stable
+        # sort keeps same-year entries (S1 + its Part 2) in sane order.
+        results = Enum.sort_by(results, &(&1.year || "9999"))
+
+        case pick(results, &describe_kitsu/1, "which season/entry?", & &1.poster) do
+          nil -> System.halt(0)
+          anime -> kitsu_selected(anime)
+        end
 
       _ ->
         %{anime: nil, episodes: [], anidb: nil}
     end
   end
 
+  # Non-interactive variant for resume/next-episode flows: the stored
+  # search_title re-matches its own entry first, so no picker needed.
+  defp kitsu_lookup(name) do
+    case Kitsu.search(name) do
+      {:ok, [anime | _]} -> kitsu_selected(anime)
+      _ -> %{anime: nil, episodes: [], anidb: nil}
+    end
+  end
+
+  defp kitsu_selected(anime) do
+    # AniList-sourced entries (Kitsu down/slow) have no Kitsu id — no AniDB
+    # mapping for them; tracker search falls back to the release title.
+    anidb =
+      with id when not is_nil(id) <- anime.id,
+           {:ok, mapped} <- Kitsu.anidb_id(id) do
+        mapped
+      else
+        _ -> nil
+      end
+
+    %{anime: anime, episodes: kitsu_episode_list(anime), anidb: anidb}
+  end
+
+  defp describe_kitsu(a) do
+    eps = if a.episode_count, do: " · #{a.episode_count} eps", else: ""
+    "#{a.title} (#{a.year || "?"}) · #{a.subtype}#{eps}"
+  end
+
   defp kitsu_episode_list(%{episode_count: count}) when is_integer(count) and count > 0,
     do: Enum.map(1..count, &%{number: &1, name: nil})
+
+  # No count and no Kitsu id to fetch an episode list from (AniList entry).
+  defp kitsu_episode_list(%{id: nil}), do: []
 
   defp kitsu_episode_list(anime) do
     {:ok, episodes} = Kitsu.episodes(anime.id)
@@ -641,8 +683,8 @@ defmodule KinoTheatre.CLI do
   # ── featured (trending on TMDB) ───────────────────────────────────
 
   defp featured do
-    unless RD.configured?() do
-      die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
+    unless Providers.any_configured?() do
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
     end
 
     unless Tmdb.configured?() do
@@ -892,7 +934,7 @@ defmodule KinoTheatre.CLI do
         IO.puts(:stderr, "  ✗ #{String.slice(name, 0, 55)} — #{unplayable_reason(reason)}")
     end
 
-    case RD.resolve_best(sources, Keyword.put(rd_opts, :notify, notify)) do
+    case Providers.resolve_best(sources, Keyword.put(rd_opts, :notify, notify)) do
       {:ok, stream, source, _skipped} ->
         finish_play(ctx, source, stream, sub_task)
 
@@ -920,7 +962,7 @@ defmodule KinoTheatre.CLI do
     notify = fn {:result, index, source, result} ->
       case result do
         {:ok, stream} ->
-          IO.puts(:stderr, "  ✓ #{source.name}")
+          IO.puts(:stderr, "  ✓ #{source.name}#{provider_tag(stream)}")
           send(parent, {:playable, index, source, stream})
 
         {:error, reason} ->
@@ -928,7 +970,7 @@ defmodule KinoTheatre.CLI do
       end
     end
 
-    RD.probe_sources(Enum.with_index(page), Keyword.put(rd_opts, :notify, notify))
+    Providers.probe_sources(Enum.with_index(page), Keyword.put(rd_opts, :notify, notify))
     playable = playable_so_far ++ collect_playable()
 
     case {playable, rest} do
@@ -1299,7 +1341,10 @@ defmodule KinoTheatre.CLI do
   end
 
   defp describe_playable(:more), do: "⋯ check more sources"
-  defp describe_playable({source, _stream}), do: describe(source)
+  defp describe_playable({source, stream}), do: describe(source) <> provider_tag(stream)
+
+  defp provider_tag(%{provider: :torbox}), do: "  ⚡TB"
+  defp provider_tag(_stream), do: ""
 
   defp collect_playable(acc \\ []) do
     receive do
@@ -1329,6 +1374,11 @@ defmodule KinoTheatre.CLI do
   defp unplayable_reason({:rd, 401}), do: rd_auth_error()
   defp unplayable_reason({:rd, status, _}), do: "Real-Debrid error #{status}"
   defp unplayable_reason({:rd, status}), do: "Real-Debrid error #{status}"
+  defp unplayable_reason({:torbox, status, detail}), do: "TorBox: #{detail} (#{status})"
+  defp unplayable_reason({:torbox, status}), do: "TorBox error #{status}"
+
+  defp unplayable_reason(:no_provider_configured),
+    do: "no debrid provider configured — run: kino setup"
   defp unplayable_reason(reason), do: inspect(reason)
 
   defp rd_auth_error,
@@ -1337,8 +1387,8 @@ defmodule KinoTheatre.CLI do
   # ── continue watching ─────────────────────────────────────────────
 
   defp continue do
-    unless RD.configured?() do
-      die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
+    unless Providers.any_configured?() do
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
     end
 
     entries = KinoTheatre.Resume.all()
@@ -1358,7 +1408,7 @@ defmodule KinoTheatre.CLI do
     ctx = entry_ctx(entry)
     sub_task = start_subtitle_task(ctx)
 
-    case RD.resolve_magnet(source["magnet"], rd_opts) do
+    case Providers.resolve_magnet(source["magnet"], rd_opts) do
       {:ok, stream} ->
         Player.open(
           :mpv,
@@ -1408,7 +1458,9 @@ defmodule KinoTheatre.CLI do
 
     cond do
       anime?(details) and type == "tv" and is_integer(entry["episode"]) ->
-        kitsu = kitsu_lookup(name)
+        # The stored search_title is the exact Kitsu entry (= season) the
+        # user was watching — re-matching with it skips the season picker.
+        kitsu = kitsu_lookup(entry["search_title"] || name)
         search_title = (kitsu.anime && kitsu.anime.title) || name
         n = entry["episode"]
         ctx = Map.merge(ctx, %{anime: true, search_title: search_title})
@@ -1418,7 +1470,7 @@ defmodule KinoTheatre.CLI do
         |> probe_and_pick([episode: n], ctx)
 
       anime?(details) and type == "movie" ->
-        kitsu = kitsu_lookup(name)
+        kitsu = kitsu_lookup(entry["search_title"] || name)
         search_title = (kitsu.anime && kitsu.anime.title) || name
         ctx = Map.merge(ctx, %{anime: true, search_title: search_title})
         q = Sources.anime_movie_query(search_title)
@@ -1732,7 +1784,7 @@ defmodule KinoTheatre.CLI do
   defp resolve(argv) do
     {magnet, opts} = magnet_args(argv, "resolve")
 
-    case RD.resolve_magnet(magnet, opts) do
+    case Providers.resolve_magnet(magnet, opts) do
       {:ok, stream} -> IO.puts(Jason.encode!(stream))
       {:error, reason} -> die_resolve(reason)
     end
@@ -1744,7 +1796,7 @@ defmodule KinoTheatre.CLI do
     url =
       case target do
         "magnet:" <> _ ->
-          case RD.resolve_magnet(target, opts) do
+          case Providers.resolve_magnet(target, opts) do
             {:ok, stream} -> stream.url
             {:error, reason} -> die_resolve(reason)
           end
@@ -1766,8 +1818,8 @@ defmodule KinoTheatre.CLI do
 
     check_invalid(invalid)
 
-    unless RD.configured?() do
-      die("RD_TOKEN is not set — add it to #{Config.path()} or the environment")
+    unless Providers.any_configured?() do
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
     end
 
     case args do
@@ -1814,7 +1866,16 @@ defmodule KinoTheatre.CLI do
         &KinoTheatre.Doctor.check_tmdb/1
       )
 
-    write_config_keys([{"RD_TOKEN", rd}, {"TMDB_API_KEY", tmdb}])
+    torbox =
+      prompt_optional_key(
+        "TorBox API key (optional — second debrid provider)",
+        "https://torbox.app/settings",
+        Application.get_env(:kino_app, :torbox_api_key),
+        &KinoTheatre.Doctor.check_torbox/1
+      )
+
+    keys = [{"RD_TOKEN", rd}, {"TMDB_API_KEY", tmdb}] ++ if(torbox, do: [{"TORBOX_API_KEY", torbox}], else: [])
+    write_config_keys(keys)
     Config.load()
 
     IO.puts(:stderr, "")
@@ -1876,6 +1937,62 @@ defmodule KinoTheatre.CLI do
               {:error, reason} ->
                 IO.puts(:stderr, IO.ANSI.format([:red, "✗ #{reason}", :reset, " — try again\n"]))
                 prompt_key(name, url, existing, validate)
+            end
+        end
+    end
+  end
+
+  # Like prompt_key/4 but skippable: enter with nothing configured moves on
+  # (returns nil), and a rejected key can still be skipped with enter.
+  defp prompt_optional_key(name, url, existing, validate) do
+    IO.puts(:stderr, IO.ANSI.format(["  ", :bright, name, :reset, :faint, "  #{url}", :reset]))
+
+    if existing do
+      IO.puts(
+        :stderr,
+        IO.ANSI.format([
+          "  current: ",
+          :yellow,
+          mask(existing),
+          :reset,
+          :faint,
+          "  — press enter to keep it, or paste a new key",
+          :reset
+        ])
+      )
+    else
+      IO.puts(:stderr, IO.ANSI.format([:faint, "  press enter to skip", :reset]))
+    end
+
+    case IO.gets("  > ") do
+      :eof ->
+        existing
+
+      line ->
+        case {String.trim(line), existing} do
+          {"", nil} ->
+            IO.puts(:stderr, IO.ANSI.format([:faint, "  skipped\n", :reset]))
+            nil
+
+          {"", key} ->
+            IO.puts(:stderr, IO.ANSI.format([:faint, "  ✓ keeping #{mask(key)}\n", :reset]))
+            key
+
+          {key, _} ->
+            IO.write(:stderr, "  checking… ")
+
+            case validate.(key) do
+              {:ok, detail} ->
+                IO.puts(:stderr, IO.ANSI.format([:green, "✓ ", :reset, detail, "\n"]))
+                key
+
+              {:error, reason} ->
+                IO.puts(
+                  :stderr,
+                  IO.ANSI.format([:red, "✗ #{reason}", :reset, " — try again (enter skips)\n"])
+                )
+
+                prompt_optional_key(name, url, existing, validate)
             end
         end
     end

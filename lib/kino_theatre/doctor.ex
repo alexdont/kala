@@ -44,6 +44,33 @@ defmodule KinoTheatre.Doctor do
 
   defp rd_days_left(_), do: "expiry unknown"
 
+  @doc "Validate a TorBox API key against /user/me. {:ok, \"essential plan\"}."
+  def check_torbox(key) do
+    case Req.get("https://api.torbox.app/v1/api/user/me",
+           auth: {:bearer, key},
+           retry: false,
+           receive_timeout: @check_timeout
+         ) do
+      {:ok, %{status: 200, body: %{"success" => true, "data" => data}}} ->
+        {:ok, torbox_plan(data["plan"])}
+
+      {:ok, %{status: status}} when status in [401, 403] ->
+        {:error, "key rejected (#{status})"}
+
+      {:ok, %{status: status}} ->
+        {:error, "TorBox answered #{status}"}
+
+      {:error, reason} ->
+        {:error, "unreachable: #{inspect(reason)}"}
+    end
+  end
+
+  defp torbox_plan(0), do: "free plan"
+  defp torbox_plan(1), do: "essential plan"
+  defp torbox_plan(2), do: "pro plan"
+  defp torbox_plan(3), do: "standard plan"
+  defp torbox_plan(_), do: "key accepted"
+
   @doc "Validate a TMDB key (v3 api_key or v4 bearer) against /configuration."
   def check_tmdb(key) do
     opts = [url: "https://api.themoviedb.org/3/configuration", retry: false, receive_timeout: @check_timeout]
@@ -126,6 +153,9 @@ defmodule KinoTheatre.Doctor do
     ]
 
     optional = [
+      Application.get_env(:kino_app, :torbox_api_key) &&
+        {"TorBox",
+         fn -> check_torbox(Application.get_env(:kino_app, :torbox_api_key)) end},
       Application.get_env(:kino_app, :opensubtitles_api_key) &&
         {"OpenSubtitles",
          fn ->

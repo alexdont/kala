@@ -6,8 +6,9 @@ defmodule KinoTheatre.RD do
   HTTPS stream URL, going through addMagnet -> selectFiles -> unrestrict.
   """
 
+  alias KinoTheatre.FilePick
+
   @base "https://api.real-debrid.com/rest/1.0"
-  @video_exts ~w(.mkv .mp4 .avi .m4v .ts .webm .mov .ogv)
 
   def configured?, do: token() not in [nil, ""]
 
@@ -87,8 +88,8 @@ defmodule KinoTheatre.RD do
     with {:ok, %{"id" => id}} <- add_magnet(magnet) do
       result =
         with {:ok, info} <- await_file_list(id),
-             {:ok, file_ids} <- pick_video_files(info, episode, season),
-             :ok <- select_files(id, file_ids),
+             {:ok, file} <- FilePick.choose(info["files"], episode, season),
+             :ok <- select_files(id, [file["id"]]),
              {:ok, %{"links" => [link | _]}} <- await_links(id, patience),
              {:ok, unrestricted} <- unrestrict(link) do
           {:ok, stream_from(unrestricted)}
@@ -131,8 +132,8 @@ defmodule KinoTheatre.RD do
 
     with {:ok, %{"id" => id}} <- add_magnet(magnet),
          {:ok, info} <- await_file_list(id),
-         {:ok, file_ids} <- pick_video_files(info, episode, season),
-         :ok <- select_files(id, file_ids) do
+         {:ok, file} <- FilePick.choose(info["files"], episode, season),
+         :ok <- select_files(id, [file["id"]]) do
       poll_download(id, notify, max_wait, System.monotonic_time(:millisecond))
     end
   end
@@ -182,99 +183,6 @@ defmodule KinoTheatre.RD do
   end
 
   @doc """
-  Try a ranked list of sources and return the first that actually plays.
-
-  Skips hashes already known-bad (`Blocklist`), records new DMCA (451)
-  takedowns as it hits them, and reports progress through `opts[:notify]`
-  (a 1-arg function receiving `{:trying, name}` / `{:skipped, name, reason}`).
-
-  Each source is given a shorter cache-wait than a direct play, so a run of
-  non-cached sources fails fast instead of stalling on each one.
-
-  Returns `{:ok, stream, source, skipped}` or `{:error, {:all_failed, skipped}}`.
-  """
-  def resolve_best(sources, opts \\ []) do
-    notify = Keyword.get(opts, :notify, fn _ -> :ok end)
-    resolve_opts = [patience: 5] ++ Keyword.take(opts, [:episode, :season])
-    do_resolve_best(sources, notify, resolve_opts, [])
-  end
-
-  @doc """
-  Concurrently resolve a batch of `{source, index}` tuples, reporting each
-  outcome through `opts[:notify]` as
-  `{:result, index, source, {:ok, stream} | {:error, reason}}`.
-
-  This is how the UI shows only playable sources: every source is actually
-  resolved on RD, so a `{:ok, stream}` result is ready to play instantly.
-  Known-blocked hashes are reported without touching RD; fresh 451s are
-  recorded in the `Blocklist`. Returns `:ok` once the whole batch finishes.
-  """
-  def probe_sources(indexed_sources, opts \\ []) do
-    notify = Keyword.get(opts, :notify, fn _ -> :ok end)
-    episode = Keyword.get(opts, :episode)
-    season = Keyword.get(opts, :season)
-
-    indexed_sources
-    |> Task.async_stream(
-      fn {source, index} ->
-        result =
-          if KinoTheatre.Blocklist.blocked?(source.hash) do
-            {:error, :known_blocked}
-          else
-            case resolve_magnet(source.magnet, patience: 5, episode: episode, season: season) do
-              {:ok, stream} ->
-                {:ok, stream}
-
-              {:error, {:rd, 451, _}} = err ->
-                KinoTheatre.Blocklist.block(source.hash)
-                err
-
-              other ->
-                other
-            end
-          end
-
-        notify.({:result, index, source, result})
-      end,
-      max_concurrency: 2,
-      ordered: false,
-      timeout: 120_000,
-      on_timeout: :kill_task
-    )
-    |> Stream.run()
-
-    :ok
-  end
-
-  defp do_resolve_best([], _notify, _resolve_opts, skipped),
-    do: {:error, {:all_failed, Enum.reverse(skipped)}}
-
-  defp do_resolve_best([source | rest], notify, resolve_opts, skipped) do
-    cond do
-      KinoTheatre.Blocklist.blocked?(source.hash) ->
-        notify.({:skipped, source.name, :known_blocked})
-        do_resolve_best(rest, notify, resolve_opts, [{source.name, :known_blocked} | skipped])
-
-      true ->
-        notify.({:trying, source.name})
-
-        case resolve_magnet(source.magnet, resolve_opts) do
-          {:ok, stream} ->
-            {:ok, stream, source, Enum.reverse(skipped)}
-
-          {:error, {:rd, 451, _}} ->
-            KinoTheatre.Blocklist.block(source.hash)
-            notify.({:skipped, source.name, :infringing})
-            do_resolve_best(rest, notify, resolve_opts, [{source.name, :infringing} | skipped])
-
-          {:error, reason} ->
-            notify.({:skipped, source.name, reason})
-            do_resolve_best(rest, notify, resolve_opts, [{source.name, reason} | skipped])
-        end
-    end
-  end
-
-  @doc """
   HLS transcode URL (AAC audio) for an unrestricted download id.
 
   This is the fix for releases whose audio the browser can't decode
@@ -306,60 +214,6 @@ defmodule KinoTheatre.RD do
   defp retry_file_list(id, attempts) do
     Process.sleep(1000)
     await_file_list(id, attempts - 1)
-  end
-
-  defp pick_video_files(%{"id" => _, "files" => files}, episode, season) when is_list(files) and files != [] do
-    videos = Enum.filter(files, fn f -> Path.extname(String.downcase(f["path"])) in @video_exts end)
-
-    case videos do
-      [] ->
-        {:error, :no_video_files}
-
-      [only] ->
-        {:ok, [only["id"]]}
-
-      many ->
-        # Batch/season pack: pick the file for the requested episode; otherwise
-        # (single-episode releases, or no match) fall back to the largest file.
-        chosen =
-          (episode && pick_episode_file(many, episode, season)) ||
-            Enum.max_by(many, & &1["bytes"])
-
-        {:ok, [chosen["id"]]}
-    end
-  end
-
-  defp pick_video_files(_info, _episode, _season), do: {:error, :no_video_files}
-
-  # Choose the file for a given episode. When the season is known (live-action
-  # TV), require an exact SxxExx match first so a multi-season pack can't grab the
-  # same episode number from the wrong season; fall back to a looser episode-only
-  # match (anime absolute numbering, single-season packs).
-  defp pick_episode_file(files, episode, season) do
-    (season && Enum.find(files, &sxxexx_file?(&1["path"], season, episode))) ||
-      Enum.find(files, &episode_file?(&1["path"], episode))
-  end
-
-  # Exact SxxExx (season + episode), e.g. "Lupin.S01E01." — the (?![0-9]) stops
-  # E1 from matching E11/E1x.
-  defp sxxexx_file?(path, season, episode) do
-    Regex.match?(~r/s0*#{season}e0*#{episode}(?![0-9])/i, Path.basename(path))
-  end
-
-  # Does this filename correspond to the given episode number? Tokenize and look
-  # for the number as a standalone token (or E24 / S01E24), so "GTO - 24" matches
-  # but "GTO 2024"/"1080p" don't.
-  defp episode_file?(path, episode) do
-    ep = Integer.to_string(episode)
-    padded = String.pad_leading(ep, 2, "0")
-
-    path
-    |> Path.basename()
-    |> String.downcase()
-    |> then(&Regex.split(~r/[\s_\-.\[\]()]+/, &1))
-    |> Enum.any?(fn tok ->
-      tok in [ep, padded, "e#{ep}", "e#{padded}"] or Regex.match?(~r/^s\d+e0*#{episode}$/, tok)
-    end)
   end
 
   # Cached torrents flip to "downloaded" within a couple of seconds.

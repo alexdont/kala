@@ -11,6 +11,7 @@ defmodule KinoTheatre.Config do
 
   @keys %{
     "RD_TOKEN" => :rd_token,
+    "TORBOX_API_KEY" => :torbox_api_key,
     "TMDB_API_KEY" => :tmdb_key,
     "KINO_LANG" => :lang,
     "KINO_SUBS" => :subs_lang,
