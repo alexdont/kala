@@ -939,7 +939,9 @@ defmodule KinoTheatre.CLI do
   end
 
   defp describe_episode(e) do
-    date = if e["air_date"] not in [nil, ""], do: " · #{e["air_date"]}"
+    # days_until is empty for past dates, so aired episodes show just the
+    # date and unaired ones get the countdown — same as the anime picker.
+    date = if e["air_date"] not in [nil, ""], do: " · #{e["air_date"]}#{days_until(e["air_date"])}"
     "E#{pad2(e["episode_number"])} #{e["name"]}#{date}"
   end
 
