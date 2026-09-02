@@ -19,7 +19,7 @@ defmodule KinoTheatre.Doctor do
            receive_timeout: @check_timeout
          ) do
       {:ok, %{status: 200, body: %{"username" => user} = body}} ->
-        {:ok, Enum.join([user, body["type"] || "?", rd_days_left(body["expiration"])], " · ")}
+        {:ok, Enum.join([user, body["type"] || "?", days_left(body["expiration"])], " · ")}
 
       {:ok, %{status: 401}} ->
         {:error, "token rejected (401)"}
@@ -35,14 +35,14 @@ defmodule KinoTheatre.Doctor do
     end
   end
 
-  defp rd_days_left(expiration) when is_binary(expiration) do
+  defp days_left(expiration) when is_binary(expiration) do
     case DateTime.from_iso8601(expiration) do
       {:ok, dt, _} -> "#{div(DateTime.diff(dt, DateTime.utc_now()), 86_400)} days left"
       _ -> "expiry unknown"
     end
   end
 
-  defp rd_days_left(_), do: "expiry unknown"
+  defp days_left(_), do: "expiry unknown"
 
   @doc "Validate a TorBox API key against /user/me. {:ok, \"essential plan\"}."
   def check_torbox(key) do
@@ -52,7 +52,7 @@ defmodule KinoTheatre.Doctor do
            receive_timeout: @check_timeout
          ) do
       {:ok, %{status: 200, body: %{"success" => true, "data" => data}}} ->
-        {:ok, torbox_plan(data["plan"])}
+        {:ok, Enum.join([torbox_plan(data["plan"]), days_left(data["premium_expires_at"])], " · ")}
 
       {:ok, %{status: status}} when status in [401, 403] ->
         {:error, "key rejected (#{status})"}
