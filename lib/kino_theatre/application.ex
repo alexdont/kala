@@ -10,6 +10,7 @@ defmodule KinoTheatre.Application do
     KinoTheatre.Dictionary.init()
     KinoTheatre.SubtitleCache.init()
     KinoTheatre.Resume.init()
+    KinoTheatre.Watchlist.init()
 
     children = [
       {Registry, keys: :unique, name: KinoTheatre.Remux.Registry},

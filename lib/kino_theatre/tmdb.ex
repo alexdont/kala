@@ -81,6 +81,7 @@ defmodule KinoTheatre.Tmdb do
   def movie(id), do: get("/movie/#{id}", append_to_response: "external_ids")
   def tv(id), do: get("/tv/#{id}", append_to_response: "external_ids")
   def season(tv_id, season_number), do: get("/tv/#{tv_id}/season/#{season_number}")
+  def release_dates(movie_id), do: get("/movie/#{movie_id}/release_dates")
 
   @doc "The IMDb id (tt…) for a details map, or nil."
   def imdb_id(details) when is_map(details), do: details["imdb_id"] || get_in(details, ["external_ids", "imdb_id"])

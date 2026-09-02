@@ -17,6 +17,7 @@ defmodule KinoTheatre.CLI do
       ["watch" | rest] -> watch(rest)
       ["download" | rest] -> download(rest)
       ["featured" | _] -> featured()
+      ["calendar" | _] -> calendar()
       ["continue" | _] -> continue()
       ["resume" | _] -> resume()
       ["resolve" | rest] -> resolve(rest)
@@ -97,6 +98,8 @@ defmodule KinoTheatre.CLI do
         up_next_item(),
         {:continue, "▶ Continue — pick up where you left off"},
         {:featured, "★ Featured — trending movies, shows & anime"},
+        {:watchlist, watchlist_row()},
+        {:calendar, "⧉ Calendar — when your watchlist drops"},
         {:search, "⌕ Search — find something by name"},
         {:settings, "⚙ Settings — toggles & preferences"}
       ])
@@ -107,6 +110,8 @@ defmodule KinoTheatre.CLI do
       {:resume_last, entry} -> continue_entry(entry)
       {:continue, _} -> continue()
       {:featured, _} -> featured()
+      {:watchlist, _} -> watchlist_menu()
+      {:calendar, _} -> calendar()
       {:search, _} -> menu_search()
       {:settings, _} -> settings_menu()
     end
@@ -251,6 +256,357 @@ defmodule KinoTheatre.CLI do
     end
   end
 
+  # ── calendar (release dates for the watchlist) ────────────────────
+
+  defp calendar do
+    unless Tmdb.configured?() do
+      die("the calendar needs TMDB_API_KEY — run: kino setup")
+    end
+
+    if KinoTheatre.Watchlist.count() == 0 do
+      IO.puts(:stderr, "\n  the calendar shows your watchlist — pin titles with ctrl-s first")
+      if tty?(), do: main_menu(), else: System.halt(0)
+    end
+
+    IO.puts(:stderr, "checking release schedules…")
+    events = KinoTheatre.Calendar.events()
+    calendar_screen(events, 0)
+  end
+
+  defp calendar_screen(events, initial) do
+    clear_screen()
+    print_month_grid(events)
+
+    if events == [] do
+      IO.puts(:stderr, "  nothing scheduled in the next weeks for your pinned titles\n")
+      if tty?(), do: main_menu(), else: System.halt(0)
+    else
+      result =
+        pick(
+          events,
+          &describe_event/1,
+          "⧉ enter watches · ctrl-r refreshes · esc backs out",
+          nil,
+          initial,
+          ["ctrl-r"]
+        )
+
+      case result do
+        nil ->
+          main_menu()
+
+        {"ctrl-r", _} ->
+          File.rm_rf(Path.join(System.tmp_dir!(), "kino-calendar"))
+          IO.puts(:stderr, "refreshing schedules…")
+          calendar_screen(KinoTheatre.Calendar.events(), 0)
+
+        {nil, event} ->
+          open_event(events, event)
+      end
+    end
+  end
+
+  defp open_event(events, %{"date" => nil} = event) do
+    # "waiting" entries: no date, but enter still drops into the watch flow
+    # (a leaked WEB or a good source may exist before the official date).
+    _ = events
+    play_title(%{type: event["type"], id: event["tmdb_id"], title: event["title"], year: nil})
+  end
+
+  defp open_event(events, event) do
+    date = Date.from_iso8601!(event["date"])
+
+    if Date.compare(date, Date.utc_today()) == :gt do
+      IO.puts(:stderr, "  not out yet — #{event["date"]}#{days_until(event["date"])}")
+      Process.sleep(1200)
+      calendar_screen(events, Enum.find_index(events, &(&1 == event)) || 0)
+    else
+      case event["kind"] do
+        "episode" ->
+          entry = %{
+            "type" => "tv",
+            "tmdb_id" => event["tmdb_id"],
+            "title" => event["title"],
+            "season" => event["season"],
+            "episode" => event["episode"],
+            "anime" => event["anime"] || false,
+            "search_title" => event["search_title"]
+          }
+
+          play_entry(entry, rd_opts(event["season"], event["episode"]))
+
+        _movie_release ->
+          play_title(%{type: "movie", id: event["tmdb_id"], title: event["title"], year: nil})
+      end
+    end
+  end
+
+  # Responsive: a wall-calendar with event titles inside the day cells when
+  # the terminal is wide enough; the compact grid + agenda otherwise.
+  defp print_month_grid(events) do
+    {_rows, cols} = tty_size()
+    if cols >= 120, do: print_big_grid(events, cols), else: print_small_grid(events)
+  end
+
+  defp print_big_grid(events, cols) do
+    today = Date.utc_today()
+    cell = min(26, div(cols - 9, 7))
+
+    by_day =
+      events
+      |> Enum.reject(&is_nil(&1["date"]))
+      |> Enum.map(&{Date.from_iso8601!(&1["date"]), &1})
+      |> Enum.filter(fn {d, _} -> d.month == today.month and d.year == today.year end)
+      |> Enum.group_by(fn {d, _} -> d.day end, fn {d, ev} ->
+        {short_event(ev), Date.compare(d, today) != :gt}
+      end)
+
+    first = Date.beginning_of_month(today)
+    offset = Date.day_of_week(first) - 1
+
+    weeks =
+      (List.duplicate(nil, offset) ++ Enum.to_list(1..Date.days_in_month(today)))
+      |> Enum.chunk_every(7, 7, List.duplicate(nil, 6))
+
+    month_name = Elixir.Calendar.strftime(today, "%B %Y")
+    width = cell * 7 + 6
+    IO.puts(:stderr, IO.ANSI.format(["\n", :bright, String.pad_leading(month_name, div(width + String.length(month_name), 2)), :reset]))
+
+    IO.puts(
+      :stderr,
+      IO.ANSI.format([
+        :faint,
+        Enum.map_join(~w(Mon Tue Wed Thu Fri Sat Sun), " ", &String.pad_trailing(&1, cell)),
+        :reset
+      ])
+    )
+
+    sep = IO.ANSI.format([:faint, String.duplicate("─", width), :reset]) |> IO.iodata_to_binary()
+
+    # Uniform slot height for every week — the busiest day sets it (cap 3),
+    # empty weeks still get the same padding so the grid rows line up.
+    height =
+      by_day
+      |> Map.values()
+      |> Enum.map(&length/1)
+      |> Enum.max(fn -> 1 end)
+      |> min(3)
+      |> max(1)
+
+    for week <- weeks do
+      IO.puts(:stderr, sep)
+
+      day_line =
+        Enum.map_join(week, " ", fn
+          nil ->
+            String.duplicate(" ", cell)
+
+          day ->
+            text = String.pad_trailing(String.pad_leading("#{day}", 2), cell)
+
+            cond do
+              day == today.day ->
+                IO.iodata_to_binary(IO.ANSI.format_fragment([:inverse, text, :inverse_off]))
+
+              Map.has_key?(by_day, day) ->
+                IO.iodata_to_binary(IO.ANSI.format_fragment([:yellow, :bright, text, :reset]))
+
+              true ->
+                IO.iodata_to_binary(IO.ANSI.format_fragment([:faint, text, :reset]))
+            end
+        end)
+
+      IO.puts(:stderr, day_line)
+
+      for i <- 0..(height - 1)//1 do
+        line =
+          Enum.map_join(week, " ", fn day ->
+            today? = day == today.day
+
+            case day && Enum.at(Map.get(by_day, day, []), i) do
+              nil ->
+                blank = String.duplicate(" ", cell)
+
+                if today?,
+                  do: IO.iodata_to_binary(IO.ANSI.format_fragment([:inverse, blank, :inverse_off])),
+                  else: blank
+
+              {label, out?} ->
+                text = String.pad_trailing(truncate("· " <> label, cell - 1), cell)
+                color = if out?, do: :green, else: :yellow
+                style = if today?, do: [:inverse, color], else: [color]
+                IO.iodata_to_binary(IO.ANSI.format_fragment(style ++ [text, :reset, :inverse_off]))
+            end
+          end)
+
+        IO.puts(:stderr, line)
+      end
+    end
+
+    IO.puts(:stderr, sep <> "\n")
+  end
+
+  defp short_event(ev) do
+    case ev["kind"] do
+      "episode" ->
+        se = if ev["season"], do: "S#{ev["season"]}E#{ev["episode"]}", else: "E#{ev["episode"]}"
+        "#{ev["title"]} #{se}"
+
+      "digital" ->
+        "#{ev["title"]} · digital"
+
+      _ ->
+        "#{ev["title"]} · theater"
+    end
+  end
+
+  # The current month as a grid: today reversed, drop days in marquee gold.
+  defp print_small_grid(events) do
+    today = Date.utc_today()
+
+    drop_days =
+      events
+      |> Enum.reject(&is_nil(&1["date"]))
+      |> Enum.map(&Date.from_iso8601!(&1["date"]))
+      |> Enum.filter(&(&1.month == today.month and &1.year == today.year))
+      |> MapSet.new(& &1.day)
+
+    month_name = Elixir.Calendar.strftime(today, "%B %Y")
+    first = Date.beginning_of_month(today)
+    offset = Date.day_of_week(first) - 1
+
+    cells =
+      List.duplicate("  ", offset) ++
+        for day <- 1..Date.days_in_month(today) do
+          text = String.pad_leading("#{day}", 2)
+
+          cond do
+            day == today.day ->
+              IO.ANSI.format_fragment([:inverse, text, :inverse_off]) |> IO.iodata_to_binary()
+
+            MapSet.member?(drop_days, day) ->
+              IO.ANSI.format_fragment([:yellow, :bright, text, :reset]) |> IO.iodata_to_binary()
+
+            true ->
+              IO.ANSI.format_fragment([:faint, text, :reset]) |> IO.iodata_to_binary()
+          end
+        end
+
+    IO.puts(:stderr, IO.ANSI.format(["\n  ", :bright, String.pad_leading(month_name, 14), :reset]))
+    IO.puts(:stderr, IO.ANSI.format([:faint, "  Mo Tu We Th Fr Sa Su", :reset]))
+
+    cells
+    |> Enum.chunk_every(7)
+    |> Enum.each(fn week -> IO.puts(:stderr, "  " <> Enum.join(week, " ")) end)
+
+    IO.puts(:stderr, "")
+  end
+
+  # Agenda rows carry the weekday and a color-coded status (needs --ansi):
+  #   Thu Sep 03 · Silo S03E10 · tomorrow      (yellow countdown)
+  #   Sun Aug 30 · Lanterns S01E03 · out ▶     (green — watchable now)
+  #   waiting    · Mutiny — digital TBA        (faint)
+  defp describe_event(%{"date" => nil} = event) do
+    IO.iodata_to_binary(IO.ANSI.format([:faint, "waiting    · #{event["label"]}", :reset]))
+  end
+
+  defp describe_event(event) do
+    date = Date.from_iso8601!(event["date"])
+    day = Elixir.Calendar.strftime(date, "%a %b %d")
+
+    line =
+      case Date.compare(date, Date.utc_today()) do
+        :gt -> [day, " · ", event["label"], :yellow, days_until(event["date"]), :reset]
+        :eq -> [day, " · ", event["label"], :green, :bright, " · today!", :reset]
+        :lt -> [day, " · ", event["label"], :green, " · out ▶", :reset]
+      end
+
+    IO.iodata_to_binary(IO.ANSI.format(line))
+  end
+
+  defp watchlist_row do
+    case KinoTheatre.Watchlist.count() do
+      0 -> "≡ Watchlist — empty (ctrl-s on any title pins it)"
+      n -> "≡ Watchlist — #{n} saved"
+    end
+  end
+
+  # In-progress first (most recent), then fresh pins, watched movies last.
+  defp watchlist_menu(initial \\ 0) do
+    clear_screen()
+    entries = KinoTheatre.Watchlist.all() |> Enum.sort_by(&watchlist_rank/1)
+
+    if entries == [] do
+      IO.puts(:stderr, "\n  watchlist is empty — hover any title and press ctrl-s to pin it")
+      main_menu()
+    else
+      result =
+        pick(
+          entries,
+          &describe_watchlist/1,
+          "≡ watchlist · enter watches · ctrl-d removes",
+          & &1["poster"],
+          initial,
+          ["ctrl-d"]
+        )
+
+      case result do
+        nil ->
+          main_menu()
+
+        {"ctrl-d", entry} ->
+          KinoTheatre.Watchlist.remove(entry["type"], entry["tmdb_id"])
+          index = Enum.find_index(entries, &(&1 == entry)) || 1
+          watchlist_menu(max(index - 1, 0))
+
+        {nil, entry} ->
+          play_title(%{
+            type: entry["type"],
+            id: entry["tmdb_id"],
+            title: entry["title"],
+            year: entry["year"]
+          })
+      end
+    end
+  end
+
+  defp watchlist_rank(entry) do
+    resume = KinoTheatre.Resume.get(entry["type"], entry["tmdb_id"])
+
+    cond do
+      watched_movie?(entry) -> {2, 0}
+      resume -> {0, -(resume["updated_at"] || 0)}
+      true -> {1, -(entry["added_at"] || 0)}
+    end
+  end
+
+  defp watched_movie?(entry) do
+    entry["type"] == "movie" and
+      KinoTheatre.Position.finished?(%{
+        type: "movie",
+        tmdb_id: entry["tmdb_id"],
+        season: nil,
+        episode: nil
+      })
+  end
+
+  defp describe_watchlist(entry) do
+    kind = if entry["type"] == "tv", do: "series", else: "movie"
+
+    progress =
+      case KinoTheatre.Resume.get(entry["type"], entry["tmdb_id"]) do
+        nil ->
+          ""
+
+        resume ->
+          at = KinoTheatre.Position.resume_at(entry_ctx(resume))
+          entry_ep(resume) <> if(at, do: " · at #{at}", else: "")
+      end
+
+    mark = if watched_movie?(entry), do: "✓ ", else: ""
+    "#{mark}#{entry["title"]} (#{entry["year"] || "?"}) · #{kind}#{progress}"
+  end
+
   defp play_next_episode(entry) do
     IO.puts(:stderr, "#{entry["title"]}#{entry_ep(entry)} — finding sources…")
     play_entry(entry, rd_opts(entry["season"], entry["episode"]))
@@ -330,11 +686,11 @@ defmodule KinoTheatre.CLI do
   defp menu_search do
     case IO.gets("search for: ") do
       :eof ->
-        System.halt(0)
+        back()
 
       line ->
         case String.trim(line) do
-          "" -> System.halt(0)
+          "" -> back()
           query -> watch([query])
         end
     end
@@ -342,6 +698,11 @@ defmodule KinoTheatre.CLI do
 
   # True when stdout is a terminal (a human), false when piped (a frontend).
   defp tty?, do: IO.ANSI.enabled?()
+
+  # Esc backs out to the main menu everywhere (piped/scripted runs exit).
+  defp back do
+    if tty?(), do: main_menu(), else: System.halt(0)
+  end
 
   # Full-screen feel (mov-cli style): each menu screen replaces what came
   # before instead of stacking under the log noise. Wipes the visible screen
@@ -459,7 +820,7 @@ defmodule KinoTheatre.CLI do
     # A trailing year ("in the gray 2026") kills TMDB's text match — strip it
     # and use it to rank instead (soft, ±1: release dates shift).
     {q, year} = split_year(query)
-    title = pick_title(q, year, 1, []) || System.halt(0)
+    title = pick_title(q, year, 1, []) || back()
     play_title(title)
   end
 
@@ -563,7 +924,7 @@ defmodule KinoTheatre.CLI do
             describe_anime_episode(ep)
         end
 
-        episode = pick(episodes, describe, "#{search_title} — which episode?") || System.halt(0)
+        episode = pick(episodes, describe, "#{search_title} — which episode?") || back()
         n = episode.number
         sources = anime_episode_sources(search_title, n, kitsu.anidb)
         q = Sources.anime_episode_query(search_title, n)
@@ -600,7 +961,7 @@ defmodule KinoTheatre.CLI do
         results = Enum.sort_by(results, &(&1.year || "9999"))
 
         case pick(results, &describe_kitsu/1, "#{name} — which season/entry?", & &1.poster) do
-          nil -> System.halt(0)
+          nil -> back()
           anime -> kitsu_selected(anime)
         end
 
@@ -738,10 +1099,10 @@ defmodule KinoTheatre.CLI do
         "movies" -> "movie"
         "shows" -> "tv"
         "anime" -> :anime
-        nil -> System.halt(0)
+        nil -> back()
       end
 
-    title = pick_featured(type, 1, []) || System.halt(0)
+    title = pick_featured(type, 1, []) || back()
     play_title(title)
   end
 
@@ -755,7 +1116,7 @@ defmodule KinoTheatre.CLI do
     titles = Enum.uniq_by(acc ++ results, &{&1.type, &1.id})
     items = if more?, do: titles ++ [:more], else: titles
 
-    case pick(items, &describe_title_item/1, featured_header(type), &title_poster/1) do
+    case pick_with_save(items, featured_header(type)) do
       :more -> pick_featured(type, page + 1, titles)
       other -> other
     end
@@ -839,7 +1200,7 @@ defmodule KinoTheatre.CLI do
           "what to watch? (#{length(titles)} results" <>
             if(more?, do: ", more available)", else: ", all shown)")
 
-        case pick(items, &describe_title_item/1, header, &title_poster/1) do
+        case pick_with_save(items, header) do
           :more -> pick_title(q, year, page + 1, titles)
           other -> other
         end
@@ -874,6 +1235,52 @@ defmodule KinoTheatre.CLI do
     end)
   end
 
+  # Title picker with watchlist pinning: ctrl-s toggles the hovered title
+  # (📌 appears immediately), cursor stays put; enter selects as usual.
+  defp pick_with_save(items, header, initial \\ 0) do
+    describe = fn
+      :more -> describe_title_item(:more)
+      t -> pin_mark(t) <> describe_title_item(t)
+    end
+
+    result =
+      pick(
+        items,
+        describe,
+        header <> " · ctrl-s pins",
+        &title_poster/1,
+        initial,
+        ["ctrl-s"]
+      )
+
+    case result do
+      nil ->
+        nil
+
+      {"ctrl-s", :more} ->
+        pick_with_save(items, header, Enum.find_index(items, &(&1 == :more)) || 0)
+
+      {"ctrl-s", title} ->
+        # Pinning pre-warms the calendar cache in the background, so the
+        # calendar opens instantly instead of fetching per-title on entry.
+        if KinoTheatre.Watchlist.toggle(title) == :added do
+          KinoTheatre.Calendar.warm(%{
+            "type" => title.type,
+            "tmdb_id" => title.id,
+            "title" => title.title
+          })
+        end
+
+        pick_with_save(items, header, Enum.find_index(items, &(&1 == title)) || 0)
+
+      {nil, item} ->
+        item
+    end
+  end
+
+  defp pin_mark(t),
+    do: if(KinoTheatre.Watchlist.has?(t.type, t.id), do: "≡ ", else: "")
+
   defp describe_title_item(:more), do: "⋯ more results"
   defp describe_title_item(title), do: describe_title(title)
 
@@ -885,7 +1292,7 @@ defmodule KinoTheatre.CLI do
     if seasons == [], do: die("TMDB lists no seasons for this show")
 
     show = details["name"] || details["title"] || ""
-    season = pick(seasons, &describe_season/1, "#{show} — which season?") || System.halt(0)
+    season = pick(seasons, &describe_season/1, "#{show} — which season?") || back()
     season_number = season["season_number"]
 
     episodes =
@@ -909,7 +1316,7 @@ defmodule KinoTheatre.CLI do
 
     episode =
       pick(episodes, describe, "#{show} S#{pad2(season_number)} — which episode?") ||
-        System.halt(0)
+        back()
 
     {season_number, episode["episode_number"]}
   end
@@ -1062,7 +1469,8 @@ defmodule KinoTheatre.CLI do
 
     case pick(items, &describe_playable/1, "which source? (all checked + playable)") do
       nil ->
-        System.halt(0)
+        if sub_task, do: Task.shutdown(sub_task, :brutal_kill)
+        back()
 
       :more ->
         probe_and_pick(rest, rd_opts, ctx, playable, sub_task)
@@ -1527,7 +1935,7 @@ defmodule KinoTheatre.CLI do
     entries = KinoTheatre.Resume.all()
     if entries == [], do: die("nothing to continue — play something with kino watch first")
 
-    entry = pick(entries, &describe_resume/1, "continue watching") || System.halt(0)
+    entry = pick(entries, &describe_resume/1, "continue watching") || back()
     continue_entry(entry)
   end
 
@@ -1670,10 +2078,13 @@ defmodule KinoTheatre.CLI do
   # list via chafa when both chafa and a URL are available.
   # `initial` restores the cursor to that item index — used by menus that
   # re-render after an action (settings), so the cursor doesn't jump home.
-  defp pick(items, describe, header, preview \\ nil, initial \\ nil) do
+  # `expect`: extra keys (fzf --expect) that resolve the picker; with a
+  # non-empty list the return shape becomes {key | nil, item} — nil key
+  # means plain enter.
+  defp pick(items, describe, header, preview \\ nil, initial \\ nil, expect \\ []) do
     if System.find_executable("fzf"),
-      do: pick_fzf(items, describe, header, preview, initial),
-      else: pick_number(items, describe, header)
+      do: pick_fzf(items, describe, header, preview, initial, expect),
+      else: pick_number(items, describe, header, expect)
   end
 
   # Runs inside fzf's preview pane: {2} is the poster URL column. Downloads
@@ -1832,9 +2243,13 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp pick_fzf(items, describe, header, preview, initial \\ nil) do
-    # fzf positions are 1-based; pos(1) is where it starts anyway.
+  defp pick_fzf(items, describe, header, preview, initial \\ nil, expect \\ []) do
+    expect_arg = if expect == [], do: "", else: ~s(--expect=#{Enum.join(expect, ",")} )
+    # fzf positions are 1-based; pos(1) is where it starts anyway. --sync
+    # is required with start:pos — without it the jump races the async list
+    # load and silently lands on row 1.
     pos = if initial && initial > 0, do: "+pos(#{initial + 1})", else: ""
+    sync = if pos == "", do: "", else: "--sync "
 
     preview? =
       preview != nil and Config.posters() != "off" and
@@ -1861,16 +2276,16 @@ defmodule KinoTheatre.CLI do
         # 2:3 aspect and is height-bound — at the list length.
         # The port file path is baked in literally: fzf runs binds in its own
         # $SHELL, where the outer sh's positional args don't exist.
-        ~s(fzf --delimiter='\t' --with-nth=3.. --no-multi --reverse ) <>
+        ~s(fzf --ansi --delimiter='\t' --with-nth=3.. --no-multi --reverse ) <> sync <> expect_arg <>
           ~s(--header="$2" ) <>
           ~s[--preview-window='right,#{poster_width()}%,border-left,<#{@poster_min_pane}(hidden)' ] <>
           ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})#{pos}' ] <>
           ~s(--preview '#{poster_preview_script()}' < "$1")
       else
-        start_bind = if pos == "", do: "", else: ~s[--bind 'start:pos(#{initial + 1})' ]
+        start_bind = if pos == "", do: "", else: sync <> ~s[--bind 'start:pos(#{initial + 1})' ]
 
-        ~s(fzf --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% ) <>
-          start_bind <> ~s(--header="$2" < "$1")
+        ~s(fzf --ansi --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% ) <>
+          expect_arg <> start_bind <> ~s(--header="$2" < "$1")
       end
 
     api_key = Base.encode16(:crypto.strong_rand_bytes(12))
@@ -1882,9 +2297,22 @@ defmodule KinoTheatre.CLI do
       case System.cmd("sh", ["-c", fzf, "sh", path, header],
              env: [{"FZF_API_KEY", api_key}]
            ) do
-        {line, 0} ->
+        {out, 0} ->
+          {key, line} =
+            if expect == [] do
+              {nil, out}
+            else
+              # --expect prints the pressed key on its own line (empty for
+              # plain enter), then the selection.
+              case String.split(out, "\n", parts: 2) do
+                [k, rest] -> {if(k == "", do: nil, else: k), rest}
+                [only] -> {nil, only}
+              end
+            end
+
           {i, _} = line |> String.trim() |> Integer.parse()
-          Enum.at(items, i)
+          item = Enum.at(items, i)
+          if expect == [], do: item, else: {key, item}
 
         {_, _cancelled} ->
           nil
@@ -1896,7 +2324,7 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp pick_number(items, describe, header) do
+  defp pick_number(items, describe, header, expect \\ []) do
     items
     |> Enum.with_index(1)
     |> Enum.each(fn {item, i} ->
@@ -1909,8 +2337,12 @@ defmodule KinoTheatre.CLI do
 
       line ->
         case Integer.parse(String.trim(line)) do
-          {n, ""} when n >= 1 and n <= length(items) -> Enum.at(items, n - 1)
-          _ -> nil
+          {n, ""} when n >= 1 and n <= length(items) ->
+            item = Enum.at(items, n - 1)
+            if expect == [], do: item, else: {nil, item}
+
+          _ ->
+            nil
         end
     end
   end
@@ -2370,6 +2802,7 @@ defmodule KinoTheatre.CLI do
       kino watch "<title>"   [--auto] [--binge] [--raw] [--backend apibay|nyaa|anime] [--limit N]
       kino download "<title>" same flow as watch, but saves the file (KINO_DOWNLOAD_DIR)
       kino featured          browse what's trending on TMDB and pick something
+      kino calendar          when your watchlist's episodes and movies drop
       kino resume            instantly resume the last thing you watched
       kino continue          pick from your watch history
       kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]

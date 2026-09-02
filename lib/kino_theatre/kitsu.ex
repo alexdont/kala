@@ -197,13 +197,8 @@ defmodule KinoTheatre.Kitsu do
   end
 
   def episode_details(%{id: kitsu_id}) when is_binary(kitsu_id) do
-    case episodes(kitsu_id) do
-      {:ok, eps} ->
-        Map.new(eps, fn e -> {e.number, %{name: e.name, airdate: e[:airdate], future: false}} end)
-
-      _ ->
-        %{}
-    end
+    {:ok, eps} = episodes(kitsu_id)
+    Map.new(eps, fn e -> {e.number, %{name: e.name, airdate: e[:airdate], future: false}} end)
   rescue
     _ -> %{}
   end
