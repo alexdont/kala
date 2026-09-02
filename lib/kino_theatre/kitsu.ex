@@ -52,7 +52,7 @@ defmodule KinoTheatre.Kitsu do
 
   @anilist_query """
   query($s:String){Page(perPage:6){media(search:$s,type:ANIME){
-    id episodes format seasonYear title{romaji english} coverImage{medium}
+    id idMal episodes format seasonYear title{romaji english} coverImage{medium}
     nextAiringEpisode{episode}}}}
   """
 
@@ -80,6 +80,8 @@ defmodule KinoTheatre.Kitsu do
 
     %{
       id: nil,
+      anilist_id: m["id"],
+      mal_id: m["idMal"],
       title: romaji,
       titles: %{"en_jp" => romaji, "en" => get_in(m, ["title", "english"])},
       episode_count: count,
@@ -130,6 +132,8 @@ defmodule KinoTheatre.Kitsu do
   defp to_anime(%{"id" => id, "attributes" => a}) do
     %{
       id: id,
+      anilist_id: nil,
+      mal_id: nil,
       title: a["canonicalTitle"],
       titles: a["titles"] || %{},
       episode_count: a["episodeCount"],
@@ -140,8 +144,71 @@ defmodule KinoTheatre.Kitsu do
   end
 
   defp to_episode(%{"attributes" => a}) do
-    %{number: a["number"], name: a["canonicalTitle"]}
+    %{number: a["number"], name: a["canonicalTitle"], airdate: a["airdate"]}
   end
+
+  @doc """
+  Per-episode metadata for a picked entry: `%{number => %{name, airdate,
+  future}}`. AniList carries dates (airingSchedule — past AND upcoming) for
+  airing shows and titles (streamingEpisodes) for finished ones; one call
+  fetches both. Kitsu-sourced entries use Kitsu's episode list. Best-effort:
+  empty map on any failure — the picker just shows bare numbers.
+  """
+  def episode_details(%{anilist_id: aid}) when is_integer(aid) do
+    query = """
+    query($id:Int){Media(id:$id){
+      airingSchedule(perPage:50){nodes{episode airingAt}}
+      streamingEpisodes{title}}}
+    """
+
+    case Req.post("https://graphql.anilist.co",
+           json: %{query: query, variables: %{id: aid}},
+           retry: false,
+           receive_timeout: 8_000
+         ) do
+      {:ok, %{status: 200, body: %{"data" => %{"Media" => media}}}} ->
+        titles =
+          for %{"title" => t} <- media["streamingEpisodes"] || [],
+              [_, n, name] <- [Regex.run(~r/^Episode\s+(\d+)\s*-\s*(.+)$/, t || "")],
+              into: %{} do
+            {String.to_integer(n), String.trim(name)}
+          end
+
+        now = System.os_time(:second)
+
+        schedule =
+          for %{"episode" => n, "airingAt" => at} <- get_in(media, ["airingSchedule", "nodes"]) || [],
+              into: %{} do
+            {n, {at |> DateTime.from_unix!() |> DateTime.to_date() |> Date.to_iso8601(), at > now}}
+          end
+
+        numbers = Enum.uniq(Map.keys(titles) ++ Map.keys(schedule))
+
+        Map.new(numbers, fn n ->
+          {date, future} = Map.get(schedule, n) || {nil, false}
+          {n, %{name: Map.get(titles, n), airdate: date, future: future}}
+        end)
+
+      _ ->
+        %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  def episode_details(%{id: kitsu_id}) when is_binary(kitsu_id) do
+    case episodes(kitsu_id) do
+      {:ok, eps} ->
+        Map.new(eps, fn e -> {e.number, %{name: e.name, airdate: e[:airdate], future: false}} end)
+
+      _ ->
+        %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  def episode_details(_anime), do: %{}
 
   defp year(<<y::binary-size(4), _::binary>>), do: y
   defp year(_), do: nil

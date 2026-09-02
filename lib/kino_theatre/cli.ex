@@ -556,12 +556,14 @@ defmodule KinoTheatre.CLI do
         play_standard(title, details)
 
       {"tv", episodes} ->
+        episodes = enrich_episodes(episodes, Kitsu.episode_details(kitsu.anime))
+
         describe = fn ep ->
           watched_mark(%{type: "tv", tmdb_id: title.id, season: nil, episode: ep.number}) <>
             describe_anime_episode(ep)
         end
 
-        episode = pick(episodes, describe, "which episode?") || System.halt(0)
+        episode = pick(episodes, describe, "#{search_title} — which episode?") || System.halt(0)
         n = episode.number
         sources = anime_episode_sources(search_title, n, kitsu.anidb)
         q = Sources.anime_episode_query(search_title, n)
@@ -597,7 +599,7 @@ defmodule KinoTheatre.CLI do
         # sort keeps same-year entries (S1 + its Part 2) in sane order.
         results = Enum.sort_by(results, &(&1.year || "9999"))
 
-        case pick(results, &describe_kitsu/1, "which season/entry?", & &1.poster) do
+        case pick(results, &describe_kitsu/1, "#{name} — which season/entry?", & &1.poster) do
           nil -> System.halt(0)
           anime -> kitsu_selected(anime)
         end
@@ -655,9 +657,42 @@ defmodule KinoTheatre.CLI do
     end
   end
 
+  # Fold per-episode titles/air dates into the bare numbered list, and
+  # append upcoming episodes the count doesn't include yet (with air dates,
+  # so "when's the next one?" is answered right in the picker).
+  defp enrich_episodes(episodes, details) when map_size(details) > 0 do
+    known = MapSet.new(episodes, & &1.number)
+
+    enriched =
+      Enum.map(episodes, fn ep -> Map.merge(ep, Map.get(details, ep.number) || %{}) end)
+
+    upcoming =
+      details
+      |> Enum.reject(fn {n, _} -> MapSet.member?(known, n) end)
+      |> Enum.map(fn {n, d} -> Map.put(d, :number, n) end)
+
+    Enum.sort_by(enriched ++ upcoming, & &1.number)
+  end
+
+  defp enrich_episodes(episodes, _details), do: episodes
+
   defp describe_anime_episode(ep) do
     name = Map.get(ep, :name)
-    "E#{pad2(ep.number)}#{if name in [nil, ""], do: "", else: " #{name}"}"
+
+    date =
+      case Map.get(ep, :airdate) do
+        nil ->
+          ""
+
+        d ->
+          case {Map.get(ep, :future), days_until(d)} do
+            {true, ""} -> " · airs #{d}"
+            {true, countdown} -> " · #{d}#{countdown}"
+            {_, _} -> " · #{d}"
+          end
+      end
+
+    "E#{pad2(ep.number)}#{if name in [nil, ""], do: "", else: " #{name}"}#{date}"
   end
 
   defp title_sources("movie", name, year, imdb, _season, _episode) do
@@ -849,7 +884,8 @@ defmodule KinoTheatre.CLI do
     seasons = Enum.filter(details["seasons"] || [], &(&1["season_number"] > 0))
     if seasons == [], do: die("TMDB lists no seasons for this show")
 
-    season = pick(seasons, &describe_season/1, "which season?") || System.halt(0)
+    show = details["name"] || details["title"] || ""
+    season = pick(seasons, &describe_season/1, "#{show} — which season?") || System.halt(0)
     season_number = season["season_number"]
 
     episodes =
@@ -871,7 +907,10 @@ defmodule KinoTheatre.CLI do
       mark <> describe_episode(e)
     end
 
-    episode = pick(episodes, describe, "which episode?") || System.halt(0)
+    episode =
+      pick(episodes, describe, "#{show} S#{pad2(season_number)} — which episode?") ||
+        System.halt(0)
+
     {season_number, episode["episode_number"]}
   end
 
@@ -902,6 +941,21 @@ defmodule KinoTheatre.CLI do
   defp describe_episode(e) do
     date = if e["air_date"] not in [nil, ""], do: " · #{e["air_date"]}"
     "E#{pad2(e["episode_number"])} #{e["name"]}#{date}"
+  end
+
+  defp days_until(iso_date) do
+    case Date.from_iso8601(iso_date) do
+      {:ok, date} ->
+        case Date.diff(date, Date.utc_today()) do
+          0 -> " · today!"
+          1 -> " · tomorrow"
+          n when n > 1 -> " · in #{n}d"
+          _ -> ""
+        end
+
+      _ ->
+        ""
+    end
   end
 
   defp pad2(n), do: String.pad_leading("#{n}", 2, "0")
