@@ -19,7 +19,7 @@ defmodule KinoTheatre.MixProject do
   defp releases do
     [
       kino: [
-        steps: [:assemble, &Burrito.wrap/1],
+        steps: [:assemble, &clean_stale_erts/1, &Burrito.wrap/1],
         burrito: [
           targets: [
             linux_x86_64: [os: :linux, cpu: :x86_64],
@@ -28,6 +28,18 @@ defmodule KinoTheatre.MixProject do
         ]
       ]
     ]
+  end
+
+  # Burrito unpacks ERTS bundles into /tmp/unpacked_erts_* (~131MB each) and
+  # never deletes them — a dozen releases fill a tmpfs and the build dies
+  # with "disk quota exceeded". Sweep the leftovers before each wrap.
+  defp clean_stale_erts(release) do
+    System.tmp_dir!()
+    |> Path.join("unpacked_erts_*")
+    |> Path.wildcard()
+    |> Enum.each(&File.rm_rf/1)
+
+    release
   end
 
   def application do
