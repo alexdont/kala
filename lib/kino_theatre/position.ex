@@ -54,26 +54,40 @@ defmodule KinoTheatre.Position do
     end
   end
 
-  -- Periodic saves never decide "finished": for live-ish streams (HLS
-  -- transcode) duration tracks the position, so percent-based rules
-  -- misfire. Only a real end-of-file clears the position.
+  -- "done" is the watched marker (Up Next / grayed ✓ in pickers); it parses
+  -- as no-resume, so a rewatch starts over. An episode counts as watched at
+  -- 90% — you stop before the credits/ED. Guard against live-ish streams
+  -- (HLS transcode) where duration just tracks position and 90% is always
+  -- true: only trust the percentage once we've actually seen the playhead
+  -- in the first half (real duration), which never happens when dur≈pos.
+  local saw_early = false
+
+  local function mark_done()
+    if opts.file == "" then return end
+    local f = io.open(opts.file, "w")
+    if f then f:write("done") f:close() end
+  end
+
   local function save()
     local pos = mp.get_property_number("time-pos")
     if not pos then return end
+    local dur = mp.get_property_number("duration")
+
+    if dur and dur > 0 and pos < dur * 0.5 then saw_early = true end
+
+    if saw_early and dur and dur > 0 and pos >= dur * 0.85 then
+      mark_done()
+      return
+    end
+
     if pos < 30 then pos = 0 end
     write(math.floor(pos))
   end
 
   mp.add_periodic_timer(5, save)
   mp.register_event("shutdown", save)
-  -- "done" doubles as the watched marker (kino's Up Next / ✓ in pickers);
-  -- it parses as no-resume, so a rewatch starts from the beginning.
   mp.register_event("end-file", function(e)
-    if e and e.reason == "eof" then
-      if opts.file == "" then return end
-      local f = io.open(opts.file, "w")
-      if f then f:write("done") f:close() end
-    end
+    if e and e.reason == "eof" then mark_done() end
   end)
   """
 
@@ -140,6 +154,48 @@ defmodule KinoTheatre.Position do
     end
   rescue
     _ -> false
+  end
+
+  @doc """
+  True when this episode counts as watched: marked "done", OR — when the
+  episode runtime (seconds) is known — the saved position is past 85% of it.
+  The runtime check retroactively catches episodes watched before the 85%
+  marker existed (their position is a plain number, not "done").
+  """
+  def watched?(ctx, runtime_s \\ nil) do
+    finished?(ctx) or
+      (is_number(runtime_s) and runtime_s > 0 and
+         case saved_seconds(ctx) do
+           n when is_integer(n) -> n >= runtime_s * 0.85
+           _ -> false
+         end)
+  rescue
+    _ -> false
+  end
+
+  @doc "Manually mark an episode watched (write \"done\") or unwatched (clear it)."
+  def set_watched(ctx, true) do
+    with key when is_binary(key) <- key(ctx), do: File.write(position_file(key), "done")
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  def set_watched(ctx, false) do
+    with key when is_binary(key) <- key(ctx), do: File.rm(position_file(key))
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp saved_seconds(ctx) do
+    with key when is_binary(key) <- key(ctx),
+         {:ok, body} <- File.read(position_file(key)),
+         {n, _} <- Integer.parse(String.trim(body)) do
+      n
+    else
+      _ -> nil
+    end
   end
 
   @doc """

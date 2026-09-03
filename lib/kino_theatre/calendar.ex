@@ -250,11 +250,59 @@ defmodule KinoTheatre.Calendar do
 
   defp pad(n), do: String.pad_leading("#{n}", 2, "0")
 
-  defp cached(cache_key, fetch) do
+  @doc """
+  The next-7-days pulse, from the disk cache ONLY — never fetches, so the
+  home screen stays instant. Stale/missing entries are re-warmed in the
+  background for the next launch. Includes yesterday (things that just
+  dropped). Dated events only, sorted.
+  """
+  def cached_events do
+    today = Date.utc_today()
+    from = Date.add(today, -1)
+    to = Date.add(today, 7)
+    fresh_after = System.os_time(:second) - @cache_ttl_s
+
+    Watchlist.all()
+    |> Enum.flat_map(fn entry ->
+      path = cache_path("#{entry["type"]}-#{entry["tmdb_id"]}")
+
+      case File.read(path) do
+        {:ok, body} ->
+          case File.stat(path, time: :posix) do
+            {:ok, %{mtime: mtime}} when mtime > fresh_after -> :ok
+            _ -> warm(entry)
+          end
+
+          case Jason.decode(body) do
+            {:ok, events} when is_list(events) -> events
+            _ -> []
+          end
+
+        _ ->
+          warm(entry)
+          []
+      end
+    end)
+    |> Enum.filter(fn ev ->
+      case Date.from_iso8601(ev["date"] || "") do
+        {:ok, d} -> Date.compare(d, from) != :lt and Date.compare(d, to) != :gt
+        _ -> false
+      end
+    end)
+    |> Enum.sort_by(& &1["date"])
+  rescue
+    _ -> []
+  end
+
+  defp cache_path(cache_key) do
     dir = Path.join(System.tmp_dir!(), "kino-calendar")
     File.mkdir_p!(dir)
     key = :erlang.md5(cache_key) |> Base.encode16(case: :lower) |> binary_part(0, 16)
-    path = Path.join(dir, key)
+    Path.join(dir, key)
+  end
+
+  defp cached(cache_key, fetch) do
+    path = cache_path(cache_key)
     fresh_after = System.os_time(:second) - @cache_ttl_s
 
     with {:ok, %{mtime: mtime}} when mtime > fresh_after <- File.stat(path, time: :posix),
@@ -268,4 +316,6 @@ defmodule KinoTheatre.Calendar do
         events
     end
   end
+
+  # (cache dir creation lives in cache_path/1)
 end

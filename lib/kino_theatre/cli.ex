@@ -35,50 +35,199 @@ defmodule KinoTheatre.CLI do
 
   # ── main menu (bare `kino` at a terminal) ─────────────────────────
 
-  # ASCII-art title over the main menu (figlet "Slant Relief", pre-rendered
-  # and kerned, so no figlet install is needed). Slanted strokes lit in a
-  # marquee red→gold gradient over a dim gray carved-relief ground.
+  # The KALA fish mark over the main menu — chafa block render of the logo
+  # (margin-trimmed, quadrant/half glyphs, max work factor), pre-rendered
+  # into source. Lit row by row in the marquee red→gold gradient.
   @banner [
-    "__/\\\\\\________/\\\\\\_ __/\\\\\\\\\\\\\\\\\\\\\\_ __/\\\\\\\\\\_____/\\\\\\_ _______/\\\\\\\\\\______        ",
-    " _\\/\\\\\\_____/\\\\\\//__ _\\/////\\\\\\///__ _\\/\\\\\\\\\\\\___\\/\\\\\\_ _____/\\\\\\///\\\\\\____       ",
-    "  _\\/\\\\\\__/\\\\\\//_____ _____\\/\\\\\\_____ _\\/\\\\\\/\\\\\\__\\/\\\\\\_ ___/\\\\\\/__\\///\\\\\\__      ",
-    "   _\\/\\\\\\\\\\\\//\\\\\\_____ _____\\/\\\\\\_____ _\\/\\\\\\//\\\\\\_\\/\\\\\\_ __/\\\\\\______\\//\\\\\\_     ",
-    "    _\\/\\\\\\//_\\//\\\\\\____ _____\\/\\\\\\_____ _\\/\\\\\\\\//\\\\\\\\/\\\\\\_ _\\/\\\\\\_______\\/\\\\\\_    ",
-    "     _\\/\\\\\\____\\//\\\\\\___ _____\\/\\\\\\_____ _\\/\\\\\\_\\//\\\\\\/\\\\\\_ _\\//\\\\\\______/\\\\\\__   ",
-    "      _\\/\\\\\\_____\\//\\\\\\__ _____\\/\\\\\\_____ _\\/\\\\\\__\\//\\\\\\\\\\\\_ __\\///\\\\\\__/\\\\\\____  ",
-    "       _\\/\\\\\\______\\//\\\\\\_ __/\\\\\\\\\\\\\\\\\\\\\\_ _\\/\\\\\\___\\//\\\\\\\\\\_ ____\\///\\\\\\\\\\/_____ ",
-    "        _\\///________\\///__ _\\///////////__ _\\///_____\\/////__ ______\\/////_______"
+    "                 ▁▂ ▗▄▄▅▆▆   ▆▅▅▄                       ",
+    "           ▁  ▗▇██▛ ██████▋  ███▉    ▆▅▄▂            ▃▆▊",
+    "       ▂▄▆▇█▎▗███▛ ▐███▜███  ███▉    █████▆▄▁     ▁▅███▘",
+    "    ▂▅▇█████▗███▛  ▟██▊▕███▎ ███▉   ▕████████▇▄▁ ▅████▘ ",
+    "  ▃▇███████████▛   ███▍ ███▌ ███▉   ▐███▍▐███████████▛  ",
+    "▗▇███▀▜███████▛   ▕███▏ ▐██▊ ███▉   ▐███  ███████████▏  ",
+    "▀████▄▟███████▙   ▐████████▉ ███▉   █████████████████▏  ",
+    " ▔▜████████████▙  ▐█████████▏███▉   █████▛███████████▙  ",
+    "   ▔▀▜█████▉▝███▙ ▐███  ▐███▏███▊▁▁ ███▊  ████▛▀ ▜████▖ ",
+    "      ▔▀▜███▏▝███▌▐███▏ ▐███▏██████▌███▊  █▛▀▔    ▝▜███▏",
+    "          ▔▀▘ ▝███▖███▎ ▐███▏██████▌██▛▀            ▔▀▜▊",
+    "                ▔▀▘▀▀▀▘ ▐███▏██▀▀▀▔                     "
   ]
-  @banner_gradient [196, 202, 208, 214, 214, 220, 220, 226, 226]
-  @banner_shadow 240
+  # Fixed red→gold anchors used when the terminal won't report its palette.
+  @ramp_fallback {{0xE0, 0x30, 0x00}, {0xFF, 0xD0, 0x00}}
 
   defp print_banner do
     {_rows, cols} = tty_size()
+    lines = banner_lines()
+    width = lines |> Enum.map(&String.length/1) |> Enum.max()
 
-    if cols >= 88 do
+    if cols >= width + 6 do
       IO.puts(:stderr, "")
+      total = length(lines)
+      panel = if cols >= width + 46, do: week_panel(cols), else: []
+      {c0, c1} = ramp_anchors()
 
-      for {line, color} <- Enum.zip(@banner, @banner_gradient) do
-        IO.puts(:stderr, "  " <> colorize_banner(line, color))
-      end
+      lines
+      |> Enum.with_index()
+      |> Enum.each(fn {line, i} ->
+        frac = if total > 1, do: i / (total - 1), else: 0.0
+        IO.puts(:stderr, "  " <> colorize_banner(line, lerp_rgb(c0, c1, frac)) <> panel_at(panel, i))
+      end)
+
+      indent = 2 + max(div(width - 24, 2), 0)
 
       IO.puts(
         :stderr,
-        IO.ANSI.format([:faint, :italic, "                               · your terminal cinema ·", :reset])
+        IO.ANSI.format([
+          :faint,
+          :italic,
+          String.duplicate(" ", indent) <> "· your terminal cinema ·",
+          :reset
+        ])
       )
     end
   end
 
-  defp colorize_banner(line, color) do
+  # ~/.kino/banner.txt overrides the built-in art — edit it by hand, rerun
+  # kino, see it live; delete the file to get the built-in back. Rows are
+  # padded to a uniform width so the gradient/panel alignment holds.
+  defp banner_lines do
+    dir = Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+
+    with {:ok, contents} <- File.read(Path.join(dir, "banner.txt")),
+         rows = contents |> String.split("\n") |> trim_blank_edges(),
+         false <- rows == [] do
+      w = rows |> Enum.map(&String.length/1) |> Enum.max()
+      Enum.map(rows, &String.pad_trailing(&1, w))
+    else
+      _ -> @banner
+    end
+  rescue
+    _ -> @banner
+  end
+
+  defp trim_blank_edges(rows) do
+    blank? = &(String.trim(&1) == "")
+    rows |> Enum.drop_while(blank?) |> Enum.reverse() |> Enum.drop_while(blank?) |> Enum.reverse()
+  end
+
+
+  # "this week" beside the banner: the next-7-days pulse from the calendar
+  # cache (read-only — the home screen never fetches). Absent when nothing
+  # is due, the terminal is narrow, or nothing is cached yet.
+  defp week_panel(cols) do
+    if cols >= 100 and Tmdb.configured?() do
+      rows = KinoTheatre.Calendar.cached_events()
+
+      case Enum.map(rows, &panel_row/1) do
+        [] ->
+          []
+
+        formatted ->
+          {shown, rest} = Enum.split(formatted, 6)
+
+          more =
+            if rest == [],
+              do: [],
+              else: [
+                IO.iodata_to_binary(
+                  IO.ANSI.format_fragment([:faint, "… #{length(rest)} more — ⧉ calendar", :reset])
+                )
+              ]
+
+          header =
+            IO.iodata_to_binary(IO.ANSI.format_fragment([:bright, "this week", :reset]))
+
+          [header | shown] ++ more
+      end
+    else
+      []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp panel_at(panel, i) do
+    case Enum.at(panel, i) do
+      nil -> ""
+      row -> "    " <> row
+    end
+  end
+
+  defp panel_row(ev) do
+    date = Date.from_iso8601!(ev["date"])
+    label = short_event(ev)
+
+    {style, prefix} =
+      case Date.compare(date, Date.utc_today()) do
+        :lt ->
+          {[:green], "out ▶"}
+
+        :eq ->
+          {[:green, :bright], "today"}
+
+        :gt ->
+          days = Date.diff(date, Date.utc_today())
+          {[:yellow], "#{Elixir.Calendar.strftime(date, "%a")} ·#{days}d"}
+      end
+
+    IO.iodata_to_binary(
+      IO.ANSI.format_fragment(style ++ ["▪ ", String.pad_trailing(prefix, 8), :reset, label])
+    )
+  end
+
+  defp colorize_banner(line, {r, g, b}) do
+    code = "\e[38;2;#{r};#{g};#{b}m"
+    shadow = IO.ANSI.light_black()
+
     line
     |> String.graphemes()
     |> Enum.map_join(fn
       " " -> " "
-      "_" -> IO.ANSI.color(@banner_shadow) <> "_"
-      stroke -> IO.ANSI.color(color) <> stroke
+      "_" -> shadow <> "_"
+      stroke -> code <> stroke
     end)
     |> Kernel.<>(IO.ANSI.reset())
   end
+
+  defp lerp_rgb({r0, g0, b0}, {r1, g1, b1}, t) do
+    {round(r0 + (r1 - r0) * t), round(g0 + (g1 - g0) * t), round(b0 + (b1 - b0) * t)}
+  end
+
+  # Marquee endpoints from the LIVE terminal palette (color 1 = red, 3 =
+  # yellow) via an OSC-4 query — so the gradient is interpolated through
+  # *this theme's* red and yellow and re-tints when omarchy switches
+  # themes. Falls back to a fixed red→gold ramp if the terminal is silent.
+  defp ramp_anchors do
+    case {query_color(1), query_color(3)} do
+      {{_, _, _} = red, {_, _, _} = yellow} -> {red, yellow}
+      _ -> @ramp_fallback
+    end
+  end
+
+  defp query_color(index) do
+    osc = "\e]4;#{index};?\e\\"
+
+    script =
+      "old=$(stty -g </dev/tty); stty raw -echo min 0 time 1 </dev/tty; " <>
+        "printf %s #{inspect(osc)} >/dev/tty; head -c 40 </dev/tty; stty \"$old\" </dev/tty"
+
+    case System.cmd("sh", ["-c", script], stderr_to_stdout: true) do
+      {out, 0} -> parse_osc_color(out)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # Response: ESC ]4;N;rgb:RRRR/GGGG/BBBB ST — 16-bit channels, take hi byte.
+  defp parse_osc_color(out) do
+    case Regex.run(~r/rgb:([0-9a-fA-F]+)\/([0-9a-fA-F]+)\/([0-9a-fA-F]+)/, out) do
+      [_, r, g, b] -> {hi8(r), hi8(g), hi8(b)}
+      _ -> nil
+    end
+  end
+
+  defp hi8(hex), do: hex |> String.pad_trailing(2, "0") |> String.slice(0, 2) |> String.to_integer(16)
 
   defp main_menu do
     # First run with no keys: go straight into the wizard instead of letting
@@ -99,12 +248,13 @@ defmodule KinoTheatre.CLI do
         {:continue, "▶ Continue — pick up where you left off"},
         {:featured, "★ Featured — trending movies, shows & anime"},
         {:watchlist, watchlist_row()},
-        {:calendar, "⧉ Calendar — when your watchlist drops"},
+        {:calendar, calendar_row()},
         {:search, "⌕ Search — find something by name"},
         {:settings, "⚙ Settings — toggles & preferences"}
       ])
 
-    case pick(items, &menu_label/1, "↑↓ to move · enter to select · esc to quit") do
+    case pick(items, &menu_label/1, "↑↓ to move · enter to select · esc to quit", nil, nil, [], :abort) do
+      :resized -> main_menu()
       nil -> System.halt(0)
       {:up_next, entry} -> play_next_episode(entry)
       {:resume_last, entry} -> continue_entry(entry)
@@ -288,10 +438,14 @@ defmodule KinoTheatre.CLI do
           "⧉ enter watches · ctrl-r refreshes · esc backs out",
           nil,
           initial,
-          ["ctrl-r"]
+          ["ctrl-r"],
+          :abort
         )
 
       case result do
+        :resized ->
+          calendar_screen(events, initial)
+
         nil ->
           main_menu()
 
@@ -522,6 +676,16 @@ defmodule KinoTheatre.CLI do
       end
 
     IO.iodata_to_binary(IO.ANSI.format(line))
+  end
+
+  defp calendar_row do
+    case length(KinoTheatre.Calendar.cached_events()) do
+      0 -> "⧉ Calendar — when your watchlist drops"
+      1 -> "⧉ Calendar — 1 drop this week"
+      n -> "⧉ Calendar — #{n} drops this week"
+    end
+  rescue
+    _ -> "⧉ Calendar — when your watchlist drops"
   end
 
   defp watchlist_row do
@@ -919,12 +1083,14 @@ defmodule KinoTheatre.CLI do
       {"tv", episodes} ->
         episodes = enrich_episodes(episodes, Kitsu.episode_details(kitsu.anime))
 
-        describe = fn ep ->
-          watched_mark(%{type: "tv", tmdb_id: title.id, season: nil, episode: ep.number}) <>
-            describe_anime_episode(ep)
-        end
+        ctx_of = fn ep -> %{type: "tv", tmdb_id: title.id, season: nil, episode: ep.number} end
+        rt_of = fn ep -> runtime_seconds(Map.get(ep, :runtime)) end
+        describe = fn ep -> watched_label(ctx_of.(ep), describe_anime_episode(ep), rt_of.(ep)) end
 
-        episode = pick(episodes, describe, "#{search_title} — which episode?") || back()
+        episode =
+          pick_episodes(episodes, describe, "#{search_title} — which episode?", ctx_of, rt_of) ||
+            back()
+
         n = episode.number
         sources = anime_episode_sources(search_title, n, kitsu.anidb)
         q = Sources.anime_episode_query(search_title, n)
@@ -1302,26 +1468,72 @@ defmodule KinoTheatre.CLI do
         {:error, reason} -> die(tmdb_error(reason, "season lookup"))
       end
 
-    describe = fn e ->
-      mark =
-        watched_mark(%{
-          type: "tv",
-          tmdb_id: details["id"],
-          season: season_number,
-          episode: e["episode_number"]
-        })
-
-      mark <> describe_episode(e)
+    ctx_of = fn e ->
+      %{type: "tv", tmdb_id: details["id"], season: season_number, episode: e["episode_number"]}
     end
 
+    rt_of = fn e -> runtime_seconds(e["runtime"]) end
+    describe = fn e -> watched_label(ctx_of.(e), describe_episode(e), rt_of.(e)) end
+
     episode =
-      pick(episodes, describe, "#{show} S#{pad2(season_number)} — which episode?") ||
+      pick_episodes(episodes, describe, "#{show} S#{pad2(season_number)} — which episode?", ctx_of, rt_of) ||
         back()
 
     {season_number, episode["episode_number"]}
   end
 
-  defp watched_mark(ctx), do: if(KinoTheatre.Position.finished?(ctx), do: "✓ ", else: "")
+  # TMDB/AniList give episode runtime in minutes; nil when unknown (then
+  # only a "done" marker counts as watched).
+  defp runtime_seconds(min) when is_integer(min) and min > 0, do: min * 60
+  defp runtime_seconds(_), do: nil
+
+  # Episode picker with two watched-state shortcuts (for fixing marks and
+  # bulk catch-up):
+  #   ctrl-w  toggle the highlighted episode watched/unwatched
+  #   alt-w   mark the highlighted episode AND every earlier one watched —
+  #           "I've seen everything up to here" in one press
+  # `ctx_of` maps an episode to its position ctx, `rt_of` to runtime seconds.
+  # Reopens at the same row after a change. (ctrl-shift-w is indistinguishable
+  # from ctrl-w in a terminal, so alt-w carries the bulk action.)
+  defp pick_episodes(items, describe, header, ctx_of, rt_of, initial \\ 0) do
+    hint = header <> " · ctrl-w toggles · alt-w marks through here"
+
+    case pick(items, describe, hint, nil, initial, ["ctrl-w", "alt-w"]) do
+      nil ->
+        nil
+
+      {"ctrl-w", ep} ->
+        ctx = ctx_of.(ep)
+        KinoTheatre.Position.set_watched(ctx, not KinoTheatre.Position.watched?(ctx, rt_of.(ep)))
+        reopen_episodes(items, describe, header, ctx_of, rt_of, ep)
+
+      {"alt-w", ep} ->
+        index = Enum.find_index(items, &(&1 == ep)) || 0
+
+        for e <- Enum.take(items, index + 1),
+            do: KinoTheatre.Position.set_watched(ctx_of.(e), true)
+
+        reopen_episodes(items, describe, header, ctx_of, rt_of, ep)
+
+      {nil, ep} ->
+        ep
+    end
+  end
+
+  defp reopen_episodes(items, describe, header, ctx_of, rt_of, ep) do
+    pick_episodes(items, describe, header, ctx_of, rt_of, Enum.find_index(items, &(&1 == ep)) || 0)
+  end
+
+  # A watched episode reads as a grayed-out "✓ …" line so finished vs. unseen
+  # is obvious at a glance (fzf renders the ANSI because pickers pass --ansi);
+  # unwatched keeps a 2-space indent so the ✓ column stays aligned.
+  defp watched_label(ctx, text, runtime_s \\ nil) do
+    if KinoTheatre.Position.watched?(ctx, runtime_s) do
+      IO.iodata_to_binary(IO.ANSI.format_fragment([:faint, "✓ ", text, :reset]))
+    else
+      "  " <> text
+    end
+  end
 
   defp find_sources(query, torrentio) do
     IO.puts(:stderr, "searching sources: #{query}")
@@ -2081,9 +2293,13 @@ defmodule KinoTheatre.CLI do
   # `expect`: extra keys (fzf --expect) that resolve the picker; with a
   # non-empty list the return shape becomes {key | nil, item} — nil key
   # means plain enter.
-  defp pick(items, describe, header, preview \\ nil, initial \\ nil, expect \\ []) do
+  # `resize`: what a live terminal resize does — :reflow (default) redraws
+  # the fzf list at the new size; :abort exits the picker returning
+  # :resized so the caller can rebuild static content (banner, calendar
+  # grid) and reopen.
+  defp pick(items, describe, header, preview \\ nil, initial \\ nil, expect \\ [], resize \\ :reflow) do
     if System.find_executable("fzf"),
-      do: pick_fzf(items, describe, header, preview, initial, expect),
+      do: pick_fzf(items, describe, header, preview, initial, expect, resize),
       else: pick_number(items, describe, header, expect)
   end
 
@@ -2175,11 +2391,11 @@ defmodule KinoTheatre.CLI do
   # resize on its own (its `resize` event never fires under kino). The
   # escript, which does stay on the tty, polls the size instead and pushes a
   # recomputed layout + preview refresh into fzf over its --listen HTTP API.
-  defp start_resize_watcher(port_file, api_key) do
+  defp start_resize_watcher(port_file, api_key, mode, marker) do
     spawn(fn ->
       case await_fzf_port(port_file, 50) do
         nil -> :ok
-        port -> watch_resize(port, api_key, tty_size())
+        port -> watch_resize(port, api_key, tty_size(), mode, marker)
       end
     end)
   end
@@ -2198,11 +2414,29 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp watch_resize(port, api_key, last_size) do
+  defp watch_resize(port, api_key, last_size, mode, marker) do
     Process.sleep(300)
     size = tty_size()
-    if size != last_size, do: push_poster_layout(port, api_key)
-    watch_resize(port, api_key, size)
+
+    if size != last_size do
+      case mode do
+        # poster pickers: re-measure, recompute pane tier, re-render chafa
+        :preview ->
+          push_poster_layout(port, api_key)
+
+        # plain pickers: a clear-screen makes fzf re-measure and reflow
+        :reflow ->
+          post_fzf(port, api_key, "clear-screen")
+
+        # static-content screens: bail out of fzf so the caller rebuilds
+        # the whole screen (banner/panel/grid) at the new size
+        :abort ->
+          File.touch!(marker)
+          post_fzf(port, api_key, "abort")
+      end
+    end
+
+    watch_resize(port, api_key, size, mode, marker)
   end
 
   # Two pushes: clear-screen makes fzf re-measure the terminal (it renders
@@ -2243,7 +2477,7 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  defp pick_fzf(items, describe, header, preview, initial \\ nil, expect \\ []) do
+  defp pick_fzf(items, describe, header, preview, initial \\ nil, expect \\ [], resize \\ :reflow) do
     expect_arg = if expect == [], do: "", else: ~s(--expect=#{Enum.join(expect, ",")} )
     # fzf positions are 1-based; pos(1) is where it starts anyway. --sync
     # is required with start:pos — without it the jump races the async list
@@ -2282,14 +2516,16 @@ defmodule KinoTheatre.CLI do
           ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})#{pos}' ] <>
           ~s(--preview '#{poster_preview_script()}' < "$1")
       else
-        start_bind = if pos == "", do: "", else: sync <> ~s[--bind 'start:pos(#{initial + 1})' ]
-
         ~s(fzf --ansi --delimiter='\t' --with-nth=2.. --no-multi --reverse --height=~60% ) <>
-          expect_arg <> start_bind <> ~s(--header="$2" < "$1")
+          sync <> expect_arg <>
+          ~s[--listen 0 --bind 'start:execute-silent(echo "$FZF_PORT" > #{port_file})#{pos}' ] <>
+          ~s(--header="$2" < "$1")
       end
 
     api_key = Base.encode16(:crypto.strong_rand_bytes(12))
-    watcher = if preview?, do: start_resize_watcher(port_file, api_key)
+    marker = path <> "-resized"
+    mode = if preview?, do: :preview, else: resize
+    watcher = start_resize_watcher(port_file, api_key, mode, marker)
 
     try do
       # fzf draws its UI on /dev/tty, reads the list from the redirected file,
@@ -2315,12 +2551,20 @@ defmodule KinoTheatre.CLI do
           if expect == [], do: item, else: {key, item}
 
         {_, _cancelled} ->
-          nil
+          # An abort triggered by the resize watcher (marker present) is
+          # not the user pressing esc — report it so the caller re-renders.
+          if File.exists?(marker) do
+            File.rm(marker)
+            :resized
+          else
+            nil
+          end
       end
     after
       if watcher, do: Process.exit(watcher, :kill)
       File.rm(path)
       File.rm(port_file)
+      File.rm(marker)
     end
   end
 
