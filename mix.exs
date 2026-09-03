@@ -4,7 +4,7 @@ defmodule Kala.MixProject do
   def project do
     [
       app: :kala_app,
-      version: "0.1.17",
+      version: "1.0.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       escript: [main_module: Kala.CLI, path: "kala"],
