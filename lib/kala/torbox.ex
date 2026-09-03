@@ -1,15 +1,15 @@
-defmodule KinoTheatre.Torbox do
+defmodule Kala.Torbox do
   @moduledoc """
   TorBox API client — the second debrid provider.
 
   Same contract as `RD.resolve_magnet/2`: magnet in, playable HTTPS URL out.
   Flow: checkcached (by hash, instant) → createtorrent (instant for cached)
   → pick the video file → requestdl (CDN link). Uncached torrents fail fast
-  with `{:not_cached, ...}` — kino's probe philosophy is verified-playable
+  with `{:not_cached, ...}` — kala's probe philosophy is verified-playable
   only, and TorBox cloud-downloading belongs to an explicit flow, not a probe.
   """
 
-  alias KinoTheatre.FilePick
+  alias Kala.FilePick
 
   @base "https://api.torbox.app/v1/api"
 
@@ -145,5 +145,5 @@ defmodule KinoTheatre.Torbox do
     )
   end
 
-  defp token, do: Application.get_env(:kino_app, :torbox_api_key)
+  defp token, do: Application.get_env(:kala_app, :torbox_api_key)
 end

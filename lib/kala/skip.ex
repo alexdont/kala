@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Skip do
+defmodule Kala.Skip do
   @moduledoc """
   Intro/credits skipping with a Netflix-style on-screen prompt.
 
@@ -11,7 +11,7 @@ defmodule KinoTheatre.Skip do
        "Credits"/… chapters (only chapters ≤ 4 minutes, so a mislabeled
        real chapter never gets eaten).
 
-  What happens on detection is the KINO_SKIP mode:
+  What happens on detection is the KALA_SKIP mode:
 
     * "ask" (default) — a "⏭ Skip — TAB" button appears on the video while
       the intro plays; Tab jumps past it, ignoring it watches it. Openings
@@ -22,19 +22,19 @@ defmodule KinoTheatre.Skip do
   Outside a detected intro, Tab is a +85s seek — the universal "no data,
   just jump the intro" key. No fingerprint detection on purpose: it needs
   several episodes' audio downloaded and analyzed before playback, which
-  fights kino's instant-start, low-resource design.
+  fights kala's instant-start, low-resource design.
   """
 
-  alias KinoTheatre.{Config, Kitsu}
+  alias Kala.{Config, Kitsu}
 
   @script """
-  -- kino skip: intro/credits skipping (AniSkip windows + named chapters).
+  -- kala skip: intro/credits skipping (AniSkip windows + named chapters).
   -- mode=ask shows a Skip button and waits for TAB; mode=auto jumps.
-  -- Written by kino on every launch; do not edit.
+  -- Written by kala on every launch; do not edit.
   local options = require "mp.options"
   local msg = require "mp.msg"
   local opts = { windows = "", mode = "ask", stinger = "" }
-  options.read_options(opts, "kino-skip")
+  options.read_options(opts, "kala-skip")
 
   -- "start-end@episodelength;…" — the submitted episode length rides along
   -- so mismatched cuts can be rejected at runtime (@0 / missing = unknown).
@@ -101,7 +101,7 @@ defmodule KinoTheatre.Skip do
   -- is inside a window, so it works again after a skip, a rewind, a replay.
   local function do_skip(zone)
     mp.commandv("seek", zone.target, "absolute+exact")
-    mp.osd_message("kino: skipped " .. zone.what, 2)
+    mp.osd_message("kala: skipped " .. zone.what, 2)
     msg.info("skipped " .. zone.what)
   end
 
@@ -135,7 +135,7 @@ defmodule KinoTheatre.Skip do
   end
 
   -- Stinger reminder: as the runtime approaches the end, warn once that
-  -- there's a scene worth staying for (movies only; kino sets the opt from
+  -- there's a scene worth staying for (movies only; kala sets the opt from
   -- TMDB's duringcreditsstinger/aftercreditsstinger keywords).
   local stinger_warned = false
   local function stinger_reminder(t)
@@ -143,7 +143,7 @@ defmodule KinoTheatre.Skip do
     local dur = mp.get_property_number("duration")
     if dur and dur > 600 and t > dur - 150 then
       stinger_warned = true
-      mp.osd_message("kino: this movie has a post-credit scene — don't quit early", 6)
+      mp.osd_message("kala: this movie has a post-credit scene — don't quit early", 6)
       msg.info("stinger reminder shown (" .. opts.stinger .. ")")
     end
   end
@@ -182,12 +182,12 @@ defmodule KinoTheatre.Skip do
       hide_prompt()
     else
       mp.commandv("seek", 85, "relative")
-      mp.osd_message("kino: +85s", 1)
+      mp.osd_message("kala: +85s", 1)
       msg.info("blind +85s")
     end
   end
 
-  mp.add_key_binding("TAB", "kino-skip", function(e)
+  mp.add_key_binding("TAB", "kala-skip", function(e)
     if e.event == "down" and not hold_timer then
       hold_timer = mp.add_timeout(0.6, fire)
       mp.osd_message("keep holding to skip…", 0.6)
@@ -208,7 +208,7 @@ defmodule KinoTheatre.Skip do
         []
 
       mode ->
-        ["--script=#{script_path()}", "--script-opts-append=kino-skip-mode=#{mode}"]
+        ["--script=#{script_path()}", "--script-opts-append=kala-skip-mode=#{mode}"]
     end
   rescue
     _ -> []
@@ -222,7 +222,7 @@ defmodule KinoTheatre.Skip do
   def window_args(ctx) do
     with true <- Config.skip() != "off",
          spec when spec != "" <- windows(ctx) do
-      ["--script-opts-append=kino-skip-windows=#{spec}"]
+      ["--script-opts-append=kala-skip-windows=#{spec}"]
     else
       _ -> []
     end
@@ -246,7 +246,7 @@ defmodule KinoTheatre.Skip do
 
         if Config.skip() == "off",
           do: [],
-          else: ["--script-opts-append=kino-skip-stinger=#{Enum.join(parts, ",")}"]
+          else: ["--script-opts-append=kala-skip-stinger=#{Enum.join(parts, ",")}"]
     end
   end
 
@@ -258,7 +258,7 @@ defmodule KinoTheatre.Skip do
   def stinger_parts(%{type: "movie", tmdb_id: id}) when not is_nil(id) do
     spec =
       cached("stinger-#{id}", fn ->
-        case KinoTheatre.Tmdb.stingers(id) do
+        case Kala.Tmdb.stingers(id) do
           {false, false} ->
             ""
 
@@ -348,7 +348,7 @@ defmodule KinoTheatre.Skip do
   @empty_cache_max_age_s 24 * 3600
 
   defp cached(cache_key, fetch) do
-    dir = Path.join(System.tmp_dir!(), "kino-skip")
+    dir = Path.join(System.tmp_dir!(), "kala-skip")
     File.mkdir_p!(dir)
     key = :erlang.md5(cache_key) |> Base.encode16(case: :lower) |> binary_part(0, 16)
     path = Path.join(dir, key)
@@ -368,7 +368,7 @@ defmodule KinoTheatre.Skip do
 
   # Rewritten on every launch so it always matches this app version.
   defp script_path do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(System.user_home!(), ".kala")
     File.mkdir_p!(dir)
     path = Path.join(dir, "skip.lua")
     File.write!(path, @script)

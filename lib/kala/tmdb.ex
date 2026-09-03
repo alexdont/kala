@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Tmdb do
+defmodule Kala.Tmdb do
   @moduledoc """
   Minimal TMDB v3 API client — search, movie/TV details, season episodes.
 
@@ -126,5 +126,5 @@ defmodule KinoTheatre.Tmdb do
     end
   end
 
-  defp key, do: Application.get_env(:kino_app, :tmdb_key)
+  defp key, do: Application.get_env(:kala_app, :tmdb_key)
 end

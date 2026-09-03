@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Resume do
+defmodule Kala.Resume do
   @moduledoc """
   Per-title "continue watching" memory: the last season/episode + the exact
   source (torrent) the user played for each movie/show, so they can resume
@@ -69,7 +69,7 @@ defmodule KinoTheatre.Resume do
   end
 
   defp path do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(home(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(home(), ".kala")
     Path.join(dir, "resume.json")
   end
 

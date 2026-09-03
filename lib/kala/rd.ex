@@ -1,4 +1,4 @@
-defmodule KinoTheatre.RD do
+defmodule Kala.RD do
   @moduledoc """
   Real-Debrid REST API client.
 
@@ -6,7 +6,7 @@ defmodule KinoTheatre.RD do
   HTTPS stream URL, going through addMagnet -> selectFiles -> unrestrict.
   """
 
-  alias KinoTheatre.FilePick
+  alias Kala.FilePick
 
   @base "https://api.real-debrid.com/rest/1.0"
 
@@ -266,5 +266,5 @@ defmodule KinoTheatre.RD do
     )
   end
 
-  defp token, do: Application.get_env(:kino_app, :rd_token)
+  defp token, do: Application.get_env(:kala_app, :rd_token)
 end

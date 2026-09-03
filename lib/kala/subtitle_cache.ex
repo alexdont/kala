@@ -1,4 +1,4 @@
-defmodule KinoTheatre.SubtitleCache do
+defmodule Kala.SubtitleCache do
   @moduledoc """
   In-memory cache of converted subtitle VTT, keyed by source. Prevents
   re-downloading the same subtitle on every page reload — important for

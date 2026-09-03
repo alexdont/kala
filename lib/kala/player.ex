@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Player do
+defmodule Kala.Player do
   @moduledoc """
   Launches an external desktop player for a stream URL.
 
@@ -17,7 +17,7 @@ defmodule KinoTheatre.Player do
   # remuxes; ~100 MiB of buffer is plenty over a debrid HTTPS stream.
   # Decoder threads default to the core count and each adds frame buffers.
   # hwdec=auto-safe offloads decode to the GPU when safely available.
-  # Users override or extend via KINO_MPV_ARGS (later args win in mpv).
+  # Users override or extend via KALA_MPV_ARGS (later args win in mpv).
   @mpv_defaults [
     "--demuxer-max-bytes=64MiB",
     "--demuxer-max-back-bytes=32MiB",
@@ -38,7 +38,7 @@ defmodule KinoTheatre.Player do
 
       bin ->
         user_args =
-          case Application.get_env(:kino_app, :mpv_args) do
+          case Application.get_env(:kala_app, :mpv_args) do
             args when is_binary(args) -> String.split(args, ~r/\s+/, trim: true)
             _ -> []
           end
@@ -78,13 +78,13 @@ defmodule KinoTheatre.Player do
 
   defp lang_args do
     audio =
-      case KinoTheatre.Config.lang() do
+      case Kala.Config.lang() do
         l when is_binary(l) and l != "" -> ["--alang=#{aliases(l)}"]
         _ -> []
       end
 
     subs =
-      case KinoTheatre.Config.subs_lang() do
+      case Kala.Config.subs_lang() do
         l when is_binary(l) and l != "" -> ["--slang=#{aliases(l)}", "--sub-auto=fuzzy"]
         _ -> []
       end

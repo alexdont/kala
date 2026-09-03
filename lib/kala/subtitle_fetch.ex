@@ -1,4 +1,4 @@
-defmodule KinoTheatre.SubtitleFetch do
+defmodule Kala.SubtitleFetch do
   @moduledoc """
   Fetch an external subtitle file for a title/episode and save it locally so
   a desktop player can load it (`mpv --sub-file=<path>`).
@@ -15,7 +15,7 @@ defmodule KinoTheatre.SubtitleFetch do
   never break playback.
   """
 
-  alias KinoTheatre.{Jimaku, OpenSubtitles}
+  alias Kala.{Jimaku, OpenSubtitles}
 
   @cache_max_age_s 30 * 24 * 3600
 
@@ -144,13 +144,13 @@ defmodule KinoTheatre.SubtitleFetch do
     ext =
       case Path.extname(String.downcase(original_name)) do
         e when e != "" ->
-          if e in KinoTheatre.Subtitles.extensions(), do: e, else: ".srt"
+          if e in Kala.Subtitles.extensions(), do: e, else: ".srt"
 
         _ ->
           ".srt"
       end
 
-    dir = Path.join(System.tmp_dir!(), "kino-subs")
+    dir = Path.join(System.tmp_dir!(), "kala-subs")
     File.mkdir_p!(dir)
     prune(dir)
     Path.join(dir, base <> ext)

@@ -1,13 +1,13 @@
-defmodule KinoTheatre.CLI do
+defmodule Kala.CLI do
   @moduledoc """
-  The `kino` command-line interface.
+  The `kala` command-line interface.
 
   Emits JSON on stdout (one document per invocation) so frontends — the
   Omarchy overlay, scripts, a future TUI — can consume it. `--pretty` renders
   a human-readable listing instead.
   """
 
-  alias KinoTheatre.{Config, Kitsu, Player, Providers, RD, Sources, Tmdb}
+  alias Kala.{Config, Kitsu, Player, Providers, RD, Sources, Tmdb}
 
   @backends %{"apibay" => :apibay, "nyaa" => :nyaa, "anime" => :anime}
 
@@ -29,11 +29,11 @@ defmodule KinoTheatre.CLI do
       ["help" | _] -> usage(0)
       ["--help" | _] -> usage(0)
       [] -> if tty?(), do: main_menu(), else: usage(1)
-      [other | _] -> die("unknown command: #{other} (try: kino help)")
+      [other | _] -> die("unknown command: #{other} (try: kala help)")
     end
   end
 
-  # ── main menu (bare `kino` at a terminal) ─────────────────────────
+  # ── main menu (bare `kala` at a terminal) ─────────────────────────
 
   # The KALA fish mark over the main menu — chafa block render of the logo
   # (margin-trimmed, quadrant/half glyphs, max work factor), pre-rendered
@@ -87,11 +87,11 @@ defmodule KinoTheatre.CLI do
     end
   end
 
-  # ~/.kino/banner.txt overrides the built-in art — edit it by hand, rerun
-  # kino, see it live; delete the file to get the built-in back. Rows are
+  # ~/.kala/banner.txt overrides the built-in art — edit it by hand, rerun
+  # kala, see it live; delete the file to get the built-in back. Rows are
   # padded to a uniform width so the gradient/panel alignment holds.
   defp banner_lines do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(System.user_home!(), ".kala")
 
     with {:ok, contents} <- File.read(Path.join(dir, "banner.txt")),
          rows = contents |> String.split("\n") |> trim_blank_edges(),
@@ -116,7 +116,7 @@ defmodule KinoTheatre.CLI do
   # is due, the terminal is narrow, or nothing is cached yet.
   defp week_panel(cols) do
     if cols >= 100 and Tmdb.configured?() do
-      rows = KinoTheatre.Calendar.cached_events()
+      rows = Kala.Calendar.cached_events()
 
       case Enum.map(rows, &panel_row/1) do
         [] ->
@@ -273,13 +273,13 @@ defmodule KinoTheatre.CLI do
   # takes effect for the rest of the session.
 
   @settings [
-    {"KINO_AUTOPLAY", "⚡ Autoplay next episode", {:cycle, ["off", "on"]}},
-    {"KINO_SKIP", "⏭ Intro/credits skipping", {:cycle, ["ask", "auto", "off"]}},
-    {"KINO_POSTERS", "🖼 Poster previews", {:cycle, ["auto", "ascii", "ascii-bg", "off"]}},
-    {"KINO_LANG", "🗣 Audio language preference", :text},
-    {"KINO_SUBS", "💬 Subtitle language (off = none)", :text},
-    {"KINO_DOWNLOAD_DIR", "📁 Download folder", :text},
-    {"KINO_MPV_ARGS", "🎬 Extra mpv arguments", :text}
+    {"KALA_AUTOPLAY", "⚡ Autoplay next episode", {:cycle, ["off", "on"]}},
+    {"KALA_SKIP", "⏭ Intro/credits skipping", {:cycle, ["ask", "auto", "off"]}},
+    {"KALA_POSTERS", "🖼 Poster previews", {:cycle, ["auto", "ascii", "ascii-bg", "off"]}},
+    {"KALA_LANG", "🗣 Audio language preference", :text},
+    {"KALA_SUBS", "💬 Subtitle language (off = none)", :text},
+    {"KALA_DOWNLOAD_DIR", "📁 Download folder", :text},
+    {"KALA_MPV_ARGS", "🎬 Extra mpv arguments", :text}
   ]
 
   defp settings_menu(selected \\ 0) do
@@ -308,17 +308,17 @@ defmodule KinoTheatre.CLI do
   defp describe_setting({:setting, key, label, _kind}),
     do: "#{String.pad_trailing(label, 34)}  [#{setting_value(key)}]"
 
-  defp setting_value("KINO_AUTOPLAY"), do: if(Config.autoplay?(), do: "on", else: "off")
-  defp setting_value("KINO_SKIP"), do: Config.skip()
-  defp setting_value("KINO_POSTERS"), do: Config.posters()
-  defp setting_value("KINO_LANG"), do: Config.lang()
-  defp setting_value("KINO_SUBS"), do: Config.subs_lang() || "off"
+  defp setting_value("KALA_AUTOPLAY"), do: if(Config.autoplay?(), do: "on", else: "off")
+  defp setting_value("KALA_SKIP"), do: Config.skip()
+  defp setting_value("KALA_POSTERS"), do: Config.posters()
+  defp setting_value("KALA_LANG"), do: Config.lang()
+  defp setting_value("KALA_SUBS"), do: Config.subs_lang() || "off"
 
-  defp setting_value("KINO_DOWNLOAD_DIR"),
-    do: Application.get_env(:kino_app, :download_dir) || Path.join(System.user_home!(), "Videos")
+  defp setting_value("KALA_DOWNLOAD_DIR"),
+    do: Application.get_env(:kala_app, :download_dir) || Path.join(System.user_home!(), "Videos")
 
-  defp setting_value("KINO_MPV_ARGS"),
-    do: Application.get_env(:kino_app, :mpv_args) || "(none)"
+  defp setting_value("KALA_MPV_ARGS"),
+    do: Application.get_env(:kala_app, :mpv_args) || "(none)"
 
   defp change_setting(key, _label, {:cycle, values}) do
     current = setting_value(key)
@@ -344,18 +344,18 @@ defmodule KinoTheatre.CLI do
     write_config_keys([{key, value}])
     # Env vars beat the file, so a shell-exported key won't budge — put the
     # new value straight into the app env so the change applies either way.
-    Application.put_env(:kino_app, Map.fetch!(config_app_keys(), key), value)
+    Application.put_env(:kala_app, Map.fetch!(config_app_keys(), key), value)
   end
 
   defp config_app_keys do
     %{
-      "KINO_AUTOPLAY" => :autoplay,
-      "KINO_SKIP" => :skip,
-      "KINO_POSTERS" => :posters,
-      "KINO_LANG" => :lang,
-      "KINO_SUBS" => :subs_lang,
-      "KINO_DOWNLOAD_DIR" => :download_dir,
-      "KINO_MPV_ARGS" => :mpv_args
+      "KALA_AUTOPLAY" => :autoplay,
+      "KALA_SKIP" => :skip,
+      "KALA_POSTERS" => :posters,
+      "KALA_LANG" => :lang,
+      "KALA_SUBS" => :subs_lang,
+      "KALA_DOWNLOAD_DIR" => :download_dir,
+      "KALA_MPV_ARGS" => :mpv_args
     }
   end
 
@@ -363,15 +363,15 @@ defmodule KinoTheatre.CLI do
   # the end, offer its next episode; if it was left mid-way, offer to resume
   # it directly. Falls back to nothing (the plain menu) otherwise.
   defp up_next_item do
-    case KinoTheatre.Resume.all() do
+    case Kala.Resume.all() do
       [entry | _] ->
         ctx = entry_ctx(entry)
 
         cond do
-          KinoTheatre.Position.finished?(ctx) and is_integer(entry["episode"]) ->
+          Kala.Position.finished?(ctx) and is_integer(entry["episode"]) ->
             [{:up_next, %{entry | "episode" => entry["episode"] + 1}}]
 
-          KinoTheatre.Position.resume_at(ctx) != nil ->
+          Kala.Position.resume_at(ctx) != nil ->
             [{:resume_last, entry}]
 
           true ->
@@ -388,7 +388,7 @@ defmodule KinoTheatre.CLI do
 
   defp menu_label({:resume_last, entry}) do
     at =
-      case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+      case Kala.Position.resume_at(entry_ctx(entry)) do
         nil -> ""
         time -> " · at #{time}"
       end
@@ -410,16 +410,16 @@ defmodule KinoTheatre.CLI do
 
   defp calendar do
     unless Tmdb.configured?() do
-      die("the calendar needs TMDB_API_KEY — run: kino setup")
+      die("the calendar needs TMDB_API_KEY — run: kala setup")
     end
 
-    if KinoTheatre.Watchlist.count() == 0 do
+    if Kala.Watchlist.count() == 0 do
       IO.puts(:stderr, "\n  the calendar shows your watchlist — pin titles with ctrl-s first")
       if tty?(), do: main_menu(), else: System.halt(0)
     end
 
     IO.puts(:stderr, "checking release schedules…")
-    events = KinoTheatre.Calendar.events()
+    events = Kala.Calendar.events()
     calendar_screen(events, 0)
   end
 
@@ -450,9 +450,9 @@ defmodule KinoTheatre.CLI do
           main_menu()
 
         {"ctrl-r", _} ->
-          File.rm_rf(Path.join(System.tmp_dir!(), "kino-calendar"))
+          File.rm_rf(Path.join(System.tmp_dir!(), "kala-calendar"))
           IO.puts(:stderr, "refreshing schedules…")
-          calendar_screen(KinoTheatre.Calendar.events(), 0)
+          calendar_screen(Kala.Calendar.events(), 0)
 
         {nil, event} ->
           open_event(events, event)
@@ -679,7 +679,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp calendar_row do
-    case length(KinoTheatre.Calendar.cached_events()) do
+    case length(Kala.Calendar.cached_events()) do
       0 -> "⧉ Calendar — when your watchlist drops"
       1 -> "⧉ Calendar — 1 drop this week"
       n -> "⧉ Calendar — #{n} drops this week"
@@ -689,7 +689,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp watchlist_row do
-    case KinoTheatre.Watchlist.count() do
+    case Kala.Watchlist.count() do
       0 -> "≡ Watchlist — empty (ctrl-s on any title pins it)"
       n -> "≡ Watchlist — #{n} saved"
     end
@@ -698,7 +698,7 @@ defmodule KinoTheatre.CLI do
   # In-progress first (most recent), then fresh pins, watched movies last.
   defp watchlist_menu(initial \\ 0) do
     clear_screen()
-    entries = KinoTheatre.Watchlist.all() |> Enum.sort_by(&watchlist_rank/1)
+    entries = Kala.Watchlist.all() |> Enum.sort_by(&watchlist_rank/1)
 
     if entries == [] do
       IO.puts(:stderr, "\n  watchlist is empty — hover any title and press ctrl-s to pin it")
@@ -719,7 +719,7 @@ defmodule KinoTheatre.CLI do
           main_menu()
 
         {"ctrl-d", entry} ->
-          KinoTheatre.Watchlist.remove(entry["type"], entry["tmdb_id"])
+          Kala.Watchlist.remove(entry["type"], entry["tmdb_id"])
           index = Enum.find_index(entries, &(&1 == entry)) || 1
           watchlist_menu(max(index - 1, 0))
 
@@ -735,7 +735,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp watchlist_rank(entry) do
-    resume = KinoTheatre.Resume.get(entry["type"], entry["tmdb_id"])
+    resume = Kala.Resume.get(entry["type"], entry["tmdb_id"])
 
     cond do
       watched_movie?(entry) -> {2, 0}
@@ -746,7 +746,7 @@ defmodule KinoTheatre.CLI do
 
   defp watched_movie?(entry) do
     entry["type"] == "movie" and
-      KinoTheatre.Position.finished?(%{
+      Kala.Position.finished?(%{
         type: "movie",
         tmdb_id: entry["tmdb_id"],
         season: nil,
@@ -758,12 +758,12 @@ defmodule KinoTheatre.CLI do
     kind = if entry["type"] == "tv", do: "series", else: "movie"
 
     progress =
-      case KinoTheatre.Resume.get(entry["type"], entry["tmdb_id"]) do
+      case Kala.Resume.get(entry["type"], entry["tmdb_id"]) do
         nil ->
           ""
 
         resume ->
-          at = KinoTheatre.Position.resume_at(entry_ctx(resume))
+          at = Kala.Position.resume_at(entry_ctx(resume))
           entry_ep(resume) <> if(at, do: " · at #{at}", else: "")
       end
 
@@ -779,7 +779,7 @@ defmodule KinoTheatre.CLI do
   # Version line under the greeting. Capped at 2s and silent on any failure
   # so the menu never waits on GitHub; the result is cached between launches.
   defp print_update_status do
-    task = Task.async(fn -> KinoTheatre.UpdateCheck.status() end)
+    task = Task.async(fn -> Kala.UpdateCheck.status() end)
 
     case Task.yield(task, 2000) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:current, version}} ->
@@ -883,7 +883,7 @@ defmodule KinoTheatre.CLI do
 
     if pretty? do
       print_sources(sources)
-      IO.puts(:stderr, ~s(\nto pick one and play it: kino watch "#{query}"))
+      IO.puts(:stderr, ~s(\nto pick one and play it: kala watch "#{query}"))
     else
       IO.puts(Jason.encode!(sources))
     end
@@ -897,7 +897,7 @@ defmodule KinoTheatre.CLI do
 
     check_invalid(invalid)
     query = Enum.join(args, " ")
-    if query == "", do: die(~s(#{cmd} needs a query: kino #{cmd} "the matrix"))
+    if query == "", do: die(~s(#{cmd} needs a query: kala #{cmd} "the matrix"))
     {opts, query}
   end
 
@@ -933,7 +933,7 @@ defmodule KinoTheatre.CLI do
   # played. The mode is read at the single point where playback happens
   # (finish_play/4), so the whole title/source pipeline is shared.
   defp download(argv) do
-    Process.put(:kino_mode, :download)
+    Process.put(:kala_mode, :download)
     run_watch(argv)
   end
 
@@ -941,11 +941,11 @@ defmodule KinoTheatre.CLI do
     {opts, query} = watch_args(argv)
 
     unless Providers.any_configured?() do
-      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kala setup")
     end
 
-    if opts[:auto], do: Process.put(:kino_auto, true)
-    if opts[:binge], do: Process.put(:kino_binge, true)
+    if opts[:auto], do: Process.put(:kala_auto, true)
+    if opts[:binge], do: Process.put(:kala_binge, true)
 
     cond do
       opts[:raw] ->
@@ -968,7 +968,7 @@ defmodule KinoTheatre.CLI do
 
     check_invalid(invalid)
     query = Enum.join(args, " ")
-    if query == "", do: die(~s(watch needs a query: kino watch "the matrix"))
+    if query == "", do: die(~s(watch needs a query: kala watch "the matrix"))
     {opts, query}
   end
 
@@ -1286,7 +1286,7 @@ defmodule KinoTheatre.CLI do
 
   defp featured do
     unless Providers.any_configured?() do
-      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kala setup")
     end
 
     unless Tmdb.configured?() do
@@ -1462,8 +1462,8 @@ defmodule KinoTheatre.CLI do
       {"ctrl-s", title} ->
         # Pinning pre-warms the calendar cache in the background, so the
         # calendar opens instantly instead of fetching per-title on entry.
-        if KinoTheatre.Watchlist.toggle(title) == :added do
-          KinoTheatre.Calendar.warm(%{
+        if Kala.Watchlist.toggle(title) == :added do
+          Kala.Calendar.warm(%{
             "type" => title.type,
             "tmdb_id" => title.id,
             "title" => title.title
@@ -1478,7 +1478,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp pin_mark(t),
-    do: if(KinoTheatre.Watchlist.has?(t.type, t.id), do: "≡ ", else: "")
+    do: if(Kala.Watchlist.has?(t.type, t.id), do: "≡ ", else: "")
 
   defp describe_title_item(:more), do: "⋯ more results"
   defp describe_title_item(title), do: describe_title(title)
@@ -1537,14 +1537,14 @@ defmodule KinoTheatre.CLI do
 
       {"ctrl-w", ep} ->
         ctx = ctx_of.(ep)
-        KinoTheatre.Position.set_watched(ctx, not KinoTheatre.Position.watched?(ctx, rt_of.(ep)))
+        Kala.Position.set_watched(ctx, not Kala.Position.watched?(ctx, rt_of.(ep)))
         reopen_episodes(items, describe, header, ctx_of, rt_of, ep)
 
       {"alt-w", ep} ->
         index = Enum.find_index(items, &(&1 == ep)) || 0
 
         for e <- Enum.take(items, index + 1),
-            do: KinoTheatre.Position.set_watched(ctx_of.(e), true)
+            do: Kala.Position.set_watched(ctx_of.(e), true)
 
         reopen_episodes(items, describe, header, ctx_of, rt_of, ep)
 
@@ -1561,7 +1561,7 @@ defmodule KinoTheatre.CLI do
   # is obvious at a glance (fzf renders the ANSI because pickers pass --ansi);
   # unwatched keeps a 2-space indent so the ✓ column stays aligned.
   defp watched_label(ctx, text, runtime_s \\ nil) do
-    if KinoTheatre.Position.watched?(ctx, runtime_s) do
+    if Kala.Position.watched?(ctx, runtime_s) do
       IO.iodata_to_binary(IO.ANSI.format_fragment([:faint, "✓ ", text, :reset]))
     else
       "  " <> text
@@ -1627,7 +1627,7 @@ defmodule KinoTheatre.CLI do
   end
 
   defp probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task) do
-    if Process.get(:kino_auto) do
+    if Process.get(:kala_auto) do
       auto_play(sources, rd_opts, ctx)
     else
       do_probe_and_pick(sources, rd_opts, ctx, playable_so_far, sub_task)
@@ -1638,7 +1638,7 @@ defmodule KinoTheatre.CLI do
   # source that actually resolves (RD.resolve_best stops at the first hit,
   # so nothing beyond it is probed).
   defp auto_play(sources, rd_opts, ctx) do
-    sub_task = if Process.get(:kino_mode, :play) == :play, do: start_subtitle_task(ctx)
+    sub_task = if Process.get(:kala_mode, :play) == :play, do: start_subtitle_task(ctx)
     IO.puts(:stderr, "auto — trying sources best-first…")
 
     notify = fn
@@ -1728,12 +1728,12 @@ defmodule KinoTheatre.CLI do
   defp save_probe_state(nil, _playable, _rest, _rd_opts), do: :ok
 
   defp save_probe_state(ctx, playable, rest, rd_opts),
-    do: Process.put({:kino_sources, sources_key(ctx)}, {playable, rest, rd_opts})
+    do: Process.put({:kala_sources, sources_key(ctx)}, {playable, rest, rd_opts})
 
   defp sources_key(ctx), do: {ctx.type, ctx.tmdb_id, ctx[:season], ctx[:episode]}
 
   defp finish_play(ctx, source, stream, sub_task) do
-    case Process.get(:kino_mode, :play) do
+    case Process.get(:kala_mode, :play) do
       :download ->
         if sub_task, do: Task.shutdown(sub_task, :brutal_kill)
         download_stream(stream)
@@ -1742,13 +1742,13 @@ defmodule KinoTheatre.CLI do
         Player.open(
           :mpv,
           stream.url,
-          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
+          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ Kala.Skip.script_args()
         )
 
         save_resume(ctx, source)
         IO.puts(:stderr, "playing in mpv: #{stream.filename}")
 
-        binge? = Process.get(:kino_binge) || Config.autoplay?()
+        binge? = Process.get(:kala_binge) || Config.autoplay?()
 
         if binge? and ctx && is_integer(ctx.episode),
           do: binge_wait(ctx),
@@ -1757,7 +1757,7 @@ defmodule KinoTheatre.CLI do
   end
 
   # ── binge mode (auto-next on episode end) ─────────────────────────
-  # kino stays alive watching the position file the Lua tracker writes:
+  # kala stays alive watching the position file the Lua tracker writes:
   # "done" (mpv hit eof) → countdown → next episode, auto-picked. A stale
   # file (no save for 25s while the tracker saves every 5s) means the user
   # closed mpv mid-episode — binge ends quietly.
@@ -1767,7 +1767,7 @@ defmodule KinoTheatre.CLI do
       :stderr,
       IO.ANSI.format([
         :faint,
-        "binge mode: next episode starts when this one ends (Ctrl-C quits kino, mpv keeps playing)",
+        "binge mode: next episode starts when this one ends (Ctrl-C quits kala, mpv keeps playing)",
         :reset
       ])
     )
@@ -1779,7 +1779,7 @@ defmodule KinoTheatre.CLI do
     Process.sleep(3_000)
 
     cond do
-      KinoTheatre.Position.finished?(ctx) ->
+      Kala.Position.finished?(ctx) ->
         countdown_next(ctx)
 
       stale?(ctx, started_at) ->
@@ -1795,7 +1795,7 @@ defmodule KinoTheatre.CLI do
   defp stale?(ctx, started_at) do
     now = System.os_time(:second)
 
-    case KinoTheatre.Position.last_saved_at(ctx) do
+    case Kala.Position.last_saved_at(ctx) do
       nil -> now - started_at > 60
       mtime -> now - mtime > 25
     end
@@ -1816,7 +1816,7 @@ defmodule KinoTheatre.CLI do
         end
 
         IO.puts(:stderr, "")
-        Process.put(:kino_auto, true)
+        Process.put(:kala_auto, true)
         play_to(ctx, next)
     end
   end
@@ -1850,7 +1850,7 @@ defmodule KinoTheatre.CLI do
       # The launch-time stinger alert gets wiped by this screen — repeat it
       # here, where it stays visible for the whole watch. Cache-warm by the
       # pre-launch task, so this never waits on TMDB.
-      case KinoTheatre.Skip.stinger_parts(ctx) do
+      case Kala.Skip.stinger_parts(ctx) do
         [] ->
           :ok
 
@@ -1859,7 +1859,7 @@ defmodule KinoTheatre.CLI do
             :stderr,
             IO.ANSI.format([
               :yellow,
-              "  🎬 #{KinoTheatre.Skip.stinger_label(parts)}",
+              "  🎬 #{Kala.Skip.stinger_label(parts)}",
               :reset,
               :faint,
               " — worth staying through the credits\n",
@@ -1889,7 +1889,7 @@ defmodule KinoTheatre.CLI do
       case pick(items, &elem(&1, 1), "what next?") do
         {:next, _} -> play_to(ctx, next)
         {:binge, _} ->
-          Process.put(:kino_binge, true)
+          Process.put(:kala_binge, true)
           binge_wait(ctx)
         {:replay, _} -> replay(ctx, stream)
         {:switch, _} -> switch_source(ctx)
@@ -1908,9 +1908,9 @@ defmodule KinoTheatre.CLI do
   defp replay(ctx, stream) do
     args =
       subtitle_args(ctx) ++
-        KinoTheatre.Skip.window_args(ctx) ++
-        KinoTheatre.Skip.stinger_args(ctx) ++
-        position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
+        Kala.Skip.window_args(ctx) ++
+        Kala.Skip.stinger_args(ctx) ++
+        position_args(ctx, stream.filename) ++ Kala.Skip.script_args()
 
     Player.open(:mpv, stream.url, args)
     IO.puts(:stderr, "playing in mpv: #{stream.filename}")
@@ -2043,7 +2043,7 @@ defmodule KinoTheatre.CLI do
   defp switch_source(ctx) do
     clear_screen()
 
-    case ctx && Process.get({:kino_sources, sources_key(ctx)}) do
+    case ctx && Process.get({:kala_sources, sources_key(ctx)}) do
       {playable, rest, rd_opts} ->
         IO.puts(
           :stderr,
@@ -2084,7 +2084,7 @@ defmodule KinoTheatre.CLI do
     IO.puts(:stderr, "opened in browser: #{url}")
   end
 
-  # Detached, like the mpv launch — the browser must outlive kino.
+  # Detached, like the mpv launch — the browser must outlive kala.
   defp browser_open(url) do
     case System.find_executable("xdg-open") || System.find_executable("open") do
       nil -> IO.puts(:stderr, "no browser opener found — visit: #{url}")
@@ -2104,7 +2104,7 @@ defmodule KinoTheatre.CLI do
   # support; its progress bar renders on stderr.
   defp download_stream(stream) do
     dir =
-      Application.get_env(:kino_app, :download_dir) ||
+      Application.get_env(:kala_app, :download_dir) ||
         Path.join(System.user_home!(), "Videos")
 
     File.mkdir_p!(dir)
@@ -2138,7 +2138,7 @@ defmodule KinoTheatre.CLI do
   defp position_args(nil, _filename), do: []
 
   defp position_args(ctx, filename) do
-    case KinoTheatre.Position.mpv_args(ctx, filename) do
+    case Kala.Position.mpv_args(ctx, filename) do
       {args, nil} ->
         args
 
@@ -2156,7 +2156,7 @@ defmodule KinoTheatre.CLI do
     do:
       Task.async(fn ->
         subtitle_args(ctx) ++
-          KinoTheatre.Skip.window_args(ctx) ++ KinoTheatre.Skip.stinger_args(ctx)
+          Kala.Skip.window_args(ctx) ++ Kala.Skip.stinger_args(ctx)
       end)
 
   defp await_subtitles(nil), do: []
@@ -2181,7 +2181,7 @@ defmodule KinoTheatre.CLI do
         []
 
       lang ->
-        case KinoTheatre.SubtitleFetch.fetch(ctx, lang) do
+        case Kala.SubtitleFetch.fetch(ctx, lang) do
           {:ok, path, label} ->
             IO.puts(:stderr, "subtitles: #{label}")
             ["--sub-file=#{path}"]
@@ -2212,7 +2212,7 @@ defmodule KinoTheatre.CLI do
   defp sub_reason({:exception, message}), do: "subtitle fetch crashed: #{message}"
   defp sub_reason(reason), do: inspect(reason)
 
-  # Remember what was played (episode + exact source) so `kino continue`
+  # Remember what was played (episode + exact source) so `kala continue`
   # can jump straight back without re-hunting sources.
   defp save_resume(nil, _source), do: :ok
 
@@ -2224,7 +2224,7 @@ defmodule KinoTheatre.CLI do
         "updated_at" => System.os_time(:second)
       })
 
-    KinoTheatre.Resume.put(ctx.type, ctx.tmdb_id, entry)
+    Kala.Resume.put(ctx.type, ctx.tmdb_id, entry)
   end
 
   # A ctx as a resume-style entry map — the inverse of entry_ctx/1, so the
@@ -2280,7 +2280,7 @@ defmodule KinoTheatre.CLI do
   defp unplayable_reason({:torbox, status}), do: "TorBox error #{status}"
 
   defp unplayable_reason(:no_provider_configured),
-    do: "no debrid provider configured — run: kino setup"
+    do: "no debrid provider configured — run: kala setup"
   defp unplayable_reason(reason), do: inspect(reason)
 
   defp rd_auth_error,
@@ -2290,29 +2290,29 @@ defmodule KinoTheatre.CLI do
 
   defp continue do
     unless Providers.any_configured?() do
-      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kala setup")
     end
 
-    entries = KinoTheatre.Resume.all()
-    if entries == [], do: die("nothing to continue — play something with kino watch first")
+    entries = Kala.Resume.all()
+    if entries == [], do: die("nothing to continue — play something with kala watch first")
 
     entry = pick(entries, &describe_resume/1, "continue watching") || back()
     continue_entry(entry)
   end
 
-  # `kino resume`: straight back into the most recent thing — no picker.
+  # `kala resume`: straight back into the most recent thing — no picker.
   defp resume do
     unless Providers.any_configured?() do
-      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kala setup")
     end
 
-    case KinoTheatre.Resume.all() do
+    case Kala.Resume.all() do
       [] ->
-        die("nothing to resume — play something with kino watch first")
+        die("nothing to resume — play something with kala watch first")
 
       [entry | _] ->
         at =
-          case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+          case Kala.Position.resume_at(entry_ctx(entry)) do
             nil -> ""
             time -> " · at #{time}"
           end
@@ -2337,9 +2337,9 @@ defmodule KinoTheatre.CLI do
         Player.open(
           :mpv,
           stream.url,
-          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ KinoTheatre.Skip.script_args()
+          await_subtitles(sub_task) ++ position_args(ctx, stream.filename) ++ Kala.Skip.script_args()
         )
-        KinoTheatre.Resume.put(
+        Kala.Resume.put(
           entry["type"],
           entry["tmdb_id"],
           Map.put(entry, "updated_at", System.os_time(:second))
@@ -2425,7 +2425,7 @@ defmodule KinoTheatre.CLI do
       end
 
     at =
-      case KinoTheatre.Position.resume_at(entry_ctx(entry)) do
+      case Kala.Position.resume_at(entry_ctx(entry)) do
         nil -> ""
         time -> " · at #{time}"
       end
@@ -2455,13 +2455,13 @@ defmodule KinoTheatre.CLI do
   # Runs inside fzf's preview pane: {2} is the poster URL column. Downloads
   # once into a tmp cache, renders with chafa sized to the pane.
   @poster_preview ~S"""
-  url={2}; if [ "$url" = "-" ]; then echo; else d="${TMPDIR:-/tmp}/kino-posters"; mkdir -p "$d"; f="$d/$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa CHAFA_OPTS --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
+  url={2}; if [ "$url" = "-" ]; then echo; else d="${TMPDIR:-/tmp}/kala-posters"; mkdir -p "$d"; f="$d/$(printf %s "$url" | md5sum | cut -c1-16)"; [ -s "$f" ] || curl -sL "$url" -o "$f" 2>/dev/null; chafa CHAFA_OPTS --size=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} "$f" 2>/dev/null || echo; fi
   """ |> String.trim()
 
   @poster_cache_max_age_s 30 * 24 * 3600
 
   defp prune_posters do
-    dir = Path.join(System.tmp_dir!(), "kino-posters")
+    dir = Path.join(System.tmp_dir!(), "kala-posters")
     cutoff = System.os_time(:second) - @poster_cache_max_age_s
 
     case File.ls(dir) do
@@ -2483,7 +2483,7 @@ defmodule KinoTheatre.CLI do
   # Inside fzf's preview pipe chafa can't auto-detect terminal graphics, so
   # it silently degrades to colored block characters. Force the pixel
   # protocol by terminal identity instead; block symbols only as last resort.
-  # KINO_POSTERS=ascii swaps the whole thing for colored ASCII art —
+  # KALA_POSTERS=ascii swaps the whole thing for colored ASCII art —
   # foreground glyphs only; =ascii-bg additionally paints cell backgrounds.
   defp poster_preview_script do
     term = System.get_env("TERM") || ""
@@ -2537,7 +2537,7 @@ defmodule KinoTheatre.CLI do
 
   # Live resize: Erlang spawns port children into their own session with no
   # controlling terminal, so fzf never receives SIGWINCH — it can't notice a
-  # resize on its own (its `resize` event never fires under kino). The
+  # resize on its own (its `resize` event never fires under kala). The
   # escript, which does stay on the tty, polls the size instead and pushes a
   # recomputed layout + preview refresh into fzf over its --listen HTTP API.
   defp start_resize_watcher(port_file, api_key, mode, marker) do
@@ -2618,7 +2618,7 @@ defmodule KinoTheatre.CLI do
 
   # Rows/columns of the terminal fzf will draw on. Must be asked in-process:
   # System.cmd children are spawned without a controlling terminal, so
-  # `stty size </dev/tty` fails there even when kino itself is at one.
+  # `stty size </dev/tty` fails there even when kala itself is at one.
   defp tty_size do
     case {:io.rows(), :io.columns()} do
       {{:ok, rows}, {:ok, cols}} when rows > 0 and cols > 0 -> {rows, cols}
@@ -2648,7 +2648,7 @@ defmodule KinoTheatre.CLI do
           else: "#{i}\t#{describe.(item)}"
       end)
 
-    path = Path.join(System.tmp_dir!(), "kino-fzf-#{System.os_time(:millisecond)}")
+    path = Path.join(System.tmp_dir!(), "kala-fzf-#{System.os_time(:millisecond)}")
     File.write!(path, list)
     port_file = path <> "-port"
 
@@ -2846,7 +2846,7 @@ defmodule KinoTheatre.CLI do
     check_invalid(invalid)
 
     unless Providers.any_configured?() do
-      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kino setup")
+      die("no debrid provider configured (RD_TOKEN or TORBOX_API_KEY) — run: kala setup")
     end
 
     case args do
@@ -2875,30 +2875,30 @@ defmodule KinoTheatre.CLI do
   defp setup do
     unless tty?(), do: die("setup is interactive — run it at a terminal")
 
-    IO.puts(:stderr, IO.ANSI.format(["\n  🍿 ", :bright, "kino setup", :reset, " — two keys and you're watching\n"]))
+    IO.puts(:stderr, IO.ANSI.format(["\n  🍿 ", :bright, "kala setup", :reset, " — two keys and you're watching\n"]))
 
     rd =
       prompt_key(
         "Real-Debrid API token",
         "https://real-debrid.com/apitoken",
-        Application.get_env(:kino_app, :rd_token),
-        &KinoTheatre.Doctor.check_rd/1
+        Application.get_env(:kala_app, :rd_token),
+        &Kala.Doctor.check_rd/1
       )
 
     tmdb =
       prompt_key(
         "TMDB API key",
         "https://www.themoviedb.org/settings/api",
-        Application.get_env(:kino_app, :tmdb_key),
-        &KinoTheatre.Doctor.check_tmdb/1
+        Application.get_env(:kala_app, :tmdb_key),
+        &Kala.Doctor.check_tmdb/1
       )
 
     torbox =
       prompt_optional_key(
         "TorBox API key (optional — second debrid provider)",
         "https://torbox.app/settings",
-        Application.get_env(:kino_app, :torbox_api_key),
-        &KinoTheatre.Doctor.check_torbox/1
+        Application.get_env(:kala_app, :torbox_api_key),
+        &Kala.Doctor.check_torbox/1
       )
 
     keys = [{"RD_TOKEN", rd}, {"TMDB_API_KEY", tmdb}] ++ if(torbox, do: [{"TORBOX_API_KEY", torbox}], else: [])
@@ -2914,7 +2914,7 @@ defmodule KinoTheatre.CLI do
 
     IO.puts(
       :stderr,
-      "\n  saved to #{Config.path()}\n  optional extras (subtitles, Jackett, Jimaku) live in the same file.\n  all set — run: kino\n"
+      "\n  saved to #{Config.path()}\n  optional extras (subtitles, Jackett, Jimaku) live in the same file.\n  all set — run: kala\n"
     )
   end
 
@@ -3040,7 +3040,7 @@ defmodule KinoTheatre.CLI do
     File.mkdir_p!(Path.dirname(path))
     lines = case File.read(path) do
       {:ok, contents} -> String.split(contents, "\n")
-      _ -> ["# kino config — created by kino setup"]
+      _ -> ["# kala config — created by kala setup"]
     end
 
     updated =
@@ -3063,8 +3063,8 @@ defmodule KinoTheatre.CLI do
   # ── doctor (health checks) ────────────────────────────────────────
 
   defp doctor do
-    IO.puts(:stderr, "\nkino doctor — checking everything kino depends on…\n")
-    {results, healthy?} = KinoTheatre.Doctor.run()
+    IO.puts(:stderr, "\nkala doctor — checking everything kala depends on…\n")
+    {results, healthy?} = Kala.Doctor.run()
 
     for section <- [:binaries, :services] do
       IO.puts(:stderr, IO.ANSI.format([:bright, "  #{section}", :reset]))
@@ -3124,11 +3124,11 @@ defmodule KinoTheatre.CLI do
         "from a source checkout: git pull && mix escript.build")
     end
 
-    current = Application.spec(:kino_app, :vsn) |> to_string()
+    current = Application.spec(:kala_app, :vsn) |> to_string()
     IO.puts(:stderr, "current: v#{current} — checking the latest release…")
 
     latest =
-      KinoTheatre.UpdateCheck.fetch_latest() ||
+      Kala.UpdateCheck.fetch_latest() ||
         die("couldn't reach GitHub releases — try again later")
 
     if Version.compare(current, latest) != :lt do
@@ -3138,13 +3138,13 @@ defmodule KinoTheatre.CLI do
     end
 
     asset =
-      KinoTheatre.UpdateCheck.asset_name() ||
+      Kala.UpdateCheck.asset_name() ||
         die("no prebuilt binary for this platform — update from source")
 
     IO.puts(:stderr, "downloading v#{latest} (#{asset})…")
 
     body =
-      case Req.get(KinoTheatre.UpdateCheck.download_url(asset),
+      case Req.get(Kala.UpdateCheck.download_url(asset),
              receive_timeout: 120_000,
              decode_body: false
            ) do
@@ -3159,7 +3159,7 @@ defmodule KinoTheatre.CLI do
       end
 
     # Stage next to the target, then rename — atomic on the same filesystem,
-    # so a failed download can never leave a half-written kino behind.
+    # so a failed download can never leave a half-written kala behind.
     staged = bin <> ".new"
 
     with :ok <- File.write(staged, body),
@@ -3188,23 +3188,23 @@ defmodule KinoTheatre.CLI do
 
   defp usage(exit_code) do
     IO.puts(:stderr, """
-    kino — search sources, resolve via your debrid account, play in mpv
+    kala — search sources, resolve via your debrid account, play in mpv
 
     usage:
-      kino                   open the interactive menu (Continue / Featured / Search)
-      kino watch "<title>"   [--auto] [--binge] [--raw] [--backend apibay|nyaa|anime] [--limit N]
-      kino download "<title>" same flow as watch, but saves the file (KINO_DOWNLOAD_DIR)
-      kino featured          browse what's trending on TMDB and pick something
-      kino calendar          when your watchlist's episodes and movies drop
-      kino resume            instantly resume the last thing you watched
-      kino continue          pick from your watch history
-      kino search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]
-      kino resolve <magnet>  [--season N] [--episode N]
-      kino play <magnet|url> [--season N] [--episode N]
-      kino setup             interactive first-run wizard: keys in, validated live
-      kino doctor            check binaries, keys, and every service kino talks to
-      kino config
-      kino update            self-update the standalone binary to the latest release
+      kala                   open the interactive menu (Continue / Featured / Search)
+      kala watch "<title>"   [--auto] [--binge] [--raw] [--backend apibay|nyaa|anime] [--limit N]
+      kala download "<title>" same flow as watch, but saves the file (KALA_DOWNLOAD_DIR)
+      kala featured          browse what's trending on TMDB and pick something
+      kala calendar          when your watchlist's episodes and movies drop
+      kala resume            instantly resume the last thing you watched
+      kala continue          pick from your watch history
+      kala search "<query>"  [--backend apibay|nyaa|anime] [--limit N] [--json|--pretty]
+      kala resolve <magnet>  [--season N] [--episode N]
+      kala play <magnet|url> [--season N] [--episode N]
+      kala setup             interactive first-run wizard: keys in, validated live
+      kala doctor            check binaries, keys, and every service kala talks to
+      kala config
+      kala update            self-update the standalone binary to the latest release
 
     watch is interactive: pick the title (TMDB), for shows the season and
     episode, then a source — it resolves on your debrid account and plays

@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Remux.Worker do
+defmodule Kala.Remux.Worker do
   @moduledoc """
   Runs one ffmpeg process that remuxes a source URL into an HLS playlist +
   segments on disk. Owns the OS process and temp dir; killing the worker kills
@@ -13,7 +13,7 @@ defmodule KinoTheatre.Remux.Worker do
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :id)
-    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {KinoTheatre.Remux.Registry, id}})
+    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {Kala.Remux.Registry, id}})
   end
 
   @impl true

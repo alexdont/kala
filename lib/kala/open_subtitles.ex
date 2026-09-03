@@ -1,4 +1,4 @@
-defmodule KinoTheatre.OpenSubtitles do
+defmodule Kala.OpenSubtitles do
   @moduledoc """
   OpenSubtitles.com REST API client — search subtitles in any language and
   fetch the actual .srt text.
@@ -125,8 +125,8 @@ defmodule KinoTheatre.OpenSubtitles do
 
   defp auth_headers(token), do: [{"authorization", "Bearer #{token}"} | base_headers()]
 
-  defp api_key, do: Application.get_env(:kino_app, :opensubtitles_api_key)
-  defp username, do: Application.get_env(:kino_app, :opensubtitles_username)
-  defp password, do: Application.get_env(:kino_app, :opensubtitles_password)
-  defp user_agent, do: Application.get_env(:kino_app, :opensubtitles_user_agent) || "kino v1.0"
+  defp api_key, do: Application.get_env(:kala_app, :opensubtitles_api_key)
+  defp username, do: Application.get_env(:kala_app, :opensubtitles_username)
+  defp password, do: Application.get_env(:kala_app, :opensubtitles_password)
+  defp user_agent, do: Application.get_env(:kala_app, :opensubtitles_user_agent) || "kala v1.0"
 end

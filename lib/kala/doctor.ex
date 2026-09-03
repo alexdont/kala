@@ -1,6 +1,6 @@
-defmodule KinoTheatre.Doctor do
+defmodule Kala.Doctor do
   @moduledoc """
-  Health checks for `kino doctor` and live key validation for `kino setup`.
+  Health checks for `kala doctor` and live key validation for `kala setup`.
 
   Every check returns `{:ok, detail}` or `{:error, detail}` — the CLI owns
   the presentation. Service checks are run concurrently with per-check
@@ -88,7 +88,7 @@ defmodule KinoTheatre.Doctor do
     end
   end
 
-  # ── kino doctor ───────────────────────────────────────────────────
+  # ── kala doctor ───────────────────────────────────────────────────
 
   @doc """
   Run every applicable check concurrently. Returns `{results, healthy?}`:
@@ -100,7 +100,7 @@ defmodule KinoTheatre.Doctor do
       {"mpv", :required, "plays the streams"},
       {"fzf", :optional, "interactive pickers"},
       {"chafa", :optional, "poster previews"},
-      {"curl", :optional, "kino download + posters"}
+      {"curl", :optional, "kala download + posters"}
     ]
 
     binary_results =
@@ -133,14 +133,14 @@ defmodule KinoTheatre.Doctor do
   end
 
   defp service_checks do
-    rd_token = Application.get_env(:kino_app, :rd_token)
-    tmdb_key = Application.get_env(:kino_app, :tmdb_key)
+    rd_token = Application.get_env(:kala_app, :rd_token)
+    tmdb_key = Application.get_env(:kala_app, :tmdb_key)
 
     keyed = [
       rd_token && {"Real-Debrid", fn -> check_rd(rd_token) end},
-      rd_token == nil && {"Real-Debrid", fn -> {:error, "RD_TOKEN not set — run: kino setup"} end},
+      rd_token == nil && {"Real-Debrid", fn -> {:error, "RD_TOKEN not set — run: kala setup"} end},
       tmdb_key && {"TMDB", fn -> check_tmdb(tmdb_key) end},
-      tmdb_key == nil && {"TMDB", fn -> {:error, "TMDB_API_KEY not set — run: kino setup"} end}
+      tmdb_key == nil && {"TMDB", fn -> {:error, "TMDB_API_KEY not set — run: kala setup"} end}
     ]
 
     public = [
@@ -153,20 +153,20 @@ defmodule KinoTheatre.Doctor do
     ]
 
     optional = [
-      Application.get_env(:kino_app, :torbox_api_key) &&
+      Application.get_env(:kala_app, :torbox_api_key) &&
         {"TorBox",
-         fn -> check_torbox(Application.get_env(:kino_app, :torbox_api_key)) end},
-      Application.get_env(:kino_app, :opensubtitles_api_key) &&
+         fn -> check_torbox(Application.get_env(:kala_app, :torbox_api_key)) end},
+      Application.get_env(:kala_app, :opensubtitles_api_key) &&
         {"OpenSubtitles",
          fn ->
            ping("https://api.opensubtitles.com/api/v1/infos/formats",
-             headers: [{"api-key", Application.get_env(:kino_app, :opensubtitles_api_key)}]
+             headers: [{"api-key", Application.get_env(:kala_app, :opensubtitles_api_key)}]
            )
          end},
-      Application.get_env(:kino_app, :jimaku_api_key) &&
+      Application.get_env(:kala_app, :jimaku_api_key) &&
         {"Jimaku", fn -> ping("https://jimaku.cc") end},
-      Application.get_env(:kino_app, :jackett_url) &&
-        {"Jackett", fn -> ping(Application.get_env(:kino_app, :jackett_url)) end}
+      Application.get_env(:kala_app, :jackett_url) &&
+        {"Jackett", fn -> ping(Application.get_env(:kala_app, :jackett_url)) end}
     ]
 
     Enum.filter(keyed ++ public ++ optional, &is_tuple/1)
@@ -188,7 +188,7 @@ defmodule KinoTheatre.Doctor do
     case Req.get(url,
            retry: false,
            receive_timeout: @check_timeout,
-           headers: [{"user-agent", "kino"}] ++ Keyword.get(opts, :headers, [])
+           headers: [{"user-agent", "kala"}] ++ Keyword.get(opts, :headers, [])
          ) do
       {:ok, %{status: status}} when status in 200..399 -> {:ok, "reachable"}
       {:ok, %{status: status}} -> {:error, "answered #{status}"}

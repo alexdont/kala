@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Jimaku do
+defmodule Kala.Jimaku do
   @moduledoc """
   Jimaku (jimaku.cc) client — a database of Japanese anime subtitles, indexed
   per anime and per episode. Searching/listing needs the API key; the actual
@@ -63,7 +63,7 @@ defmodule KinoTheatre.Jimaku do
     String.contains?(name, ".ja") or String.match?(name, ~r/[\x{3040}-\x{30ff}\x{4e00}-\x{9fff}]/u)
   end
 
-  defp subtitle_named?(%{"name" => name}), do: KinoTheatre.Subtitles.subtitle_filename?(name)
+  defp subtitle_named?(%{"name" => name}), do: Kala.Subtitles.subtitle_filename?(name)
 
   # Download the file and classify by its *dialogue* text (ignoring the .ass
   # header, whose field names are Latin and would masquerade as English).
@@ -131,5 +131,5 @@ defmodule KinoTheatre.Jimaku do
     end
   end
 
-  defp key, do: Application.get_env(:kino_app, :jimaku_api_key)
+  defp key, do: Application.get_env(:kala_app, :jimaku_api_key)
 end

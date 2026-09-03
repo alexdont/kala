@@ -1,4 +1,4 @@
-defmodule KinoTheatre.FilePick do
+defmodule Kala.FilePick do
   @moduledoc """
   Choosing the right video file inside a torrent — shared by every debrid
   provider. Files come in as maps with `"path"` and `"bytes"` (plus whatever

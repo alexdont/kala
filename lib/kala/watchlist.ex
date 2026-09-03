@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Watchlist do
+defmodule Kala.Watchlist do
   @moduledoc """
   The user's curated to-watch list — intent, as opposed to `Resume`'s
   automatic history. Titles are pinned/unpinned with ctrl-s from any title
@@ -88,7 +88,7 @@ defmodule KinoTheatre.Watchlist do
   end
 
   defp path do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(home(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(home(), ".kala")
     Path.join(dir, "watchlist.json")
   end
 

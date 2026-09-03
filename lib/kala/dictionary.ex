@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Dictionary do
+defmodule Kala.Dictionary do
   @moduledoc """
   Word lookups for the built-in hover dictionary. Japanese comes from Jisho
   (JMdict-backed, same data Yomitan users rely on); results are cached in ETS

@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Providers do
+defmodule Kala.Providers do
   @moduledoc """
   Multi-debrid orchestration: one resolve/probe interface over every
   configured provider (Real-Debrid first — deepest cache — then TorBox).
@@ -10,7 +10,7 @@ defmodule KinoTheatre.Providers do
   only blocklisted when no configured provider can play it.
   """
 
-  alias KinoTheatre.{Blocklist, RD, Torbox}
+  alias Kala.{Blocklist, RD, Torbox}
 
   def any_configured?, do: RD.configured?() or Torbox.configured?()
 

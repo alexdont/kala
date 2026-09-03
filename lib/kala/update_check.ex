@@ -1,4 +1,4 @@
-defmodule KinoTheatre.UpdateCheck do
+defmodule Kala.UpdateCheck do
   @moduledoc """
   Checks GitHub's latest release tag against the running version — used by
   the interactive menu only (never by plumbing commands, which must stay
@@ -27,7 +27,7 @@ defmodule KinoTheatre.UpdateCheck do
     _ -> :unknown
   end
 
-  defp current_version, do: Application.spec(:kino_app, :vsn) |> to_string()
+  defp current_version, do: Application.spec(:kala_app, :vsn) |> to_string()
 
   @doc "Latest release version straight from GitHub (no cache), or nil."
   def fetch_latest do
@@ -42,9 +42,9 @@ defmodule KinoTheatre.UpdateCheck do
     arch = :erlang.system_info(:system_architecture) |> to_string()
 
     case {:os.type(), arch} do
-      {{:unix, :linux}, "x86_64" <> _} -> "kino_linux_x86_64"
-      {{:unix, :darwin}, "aarch64" <> _} -> "kino_macos_aarch64"
-      {{:unix, :darwin}, "arm" <> _} -> "kino_macos_aarch64"
+      {{:unix, :linux}, "x86_64" <> _} -> "kala_linux_x86_64"
+      {{:unix, :darwin}, "aarch64" <> _} -> "kala_macos_aarch64"
+      {{:unix, :darwin}, "arm" <> _} -> "kala_macos_aarch64"
       _ -> nil
     end
   end
@@ -98,7 +98,7 @@ defmodule KinoTheatre.UpdateCheck do
   end
 
   defp cache_file do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(System.user_home!(), ".kala")
     Path.join(dir, "update_check")
   end
 end

@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Position do
+defmodule Kala.Position do
   @moduledoc """
   Exact playback-position memory, crash-safe.
 
@@ -15,17 +15,17 @@ defmodule KinoTheatre.Position do
   @min_resume 30
 
   @script """
-  -- kino position tracker: persists time-pos so playback survives crashes,
+  -- kala position tracker: persists time-pos so playback survives crashes,
   -- and remembers the selected subtitle/audio tracks per source.
-  -- Written by kino on every launch; do not edit.
+  -- Written by kala on every launch; do not edit.
   local options = require "mp.options"
   local opts = { file = "", tracks = "" }
-  options.read_options(opts, "kino")
+  options.read_options(opts, "kala")
 
   -- Per-series track memory: when the user switches audio/subtitle track,
   -- remember the LANGUAGE (not the track id — ids differ between releases,
   -- languages carry across every episode/season). Saved as "ALANG SLANG"
-  -- (slang "off" = subtitles disabled). kino applies it to the whole series
+  -- (slang "off" = subtitles disabled). kala applies it to the whole series
   -- via --alang/--slang, overriding the global default just for this show.
   -- A 2s settle window after load ignores mpv's own initial auto-selection
   -- so only a real manual change is recorded.
@@ -124,8 +124,8 @@ defmodule KinoTheatre.Position do
         args =
           [
             "--script=#{script_path()}",
-            "--script-opts-append=kino-file=#{file}",
-            "--script-opts-append=kino-tracks=#{tracks}"
+            "--script-opts-append=kala-file=#{file}",
+            "--script-opts-append=kala-tracks=#{tracks}"
           ] ++ track_args(tracks)
 
         case read(file) do
@@ -143,12 +143,12 @@ defmodule KinoTheatre.Position do
   defp track_args(tracks_path) do
     with {:ok, contents} <- File.read(tracks_path),
          [alang, slang] <- contents |> String.trim() |> String.split(" ", parts: 2) do
-      audio = if alang in ["", "no", "off"], do: [], else: ["--aid=auto", "--alang=#{KinoTheatre.Player.lang_codes(alang)}"]
+      audio = if alang in ["", "no", "off"], do: [], else: ["--aid=auto", "--alang=#{Kala.Player.lang_codes(alang)}"]
 
       subs =
         case slang do
           s when s in ["off", "no", ""] -> ["--sid=no"]
-          s -> ["--sid=auto", "--slang=#{KinoTheatre.Player.lang_codes(s)}", "--sub-auto=fuzzy"]
+          s -> ["--sid=auto", "--slang=#{Kala.Player.lang_codes(s)}", "--sub-auto=fuzzy"]
         end
 
       audio ++ subs
@@ -298,6 +298,6 @@ defmodule KinoTheatre.Position do
   end
 
   defp data_dir do
-    Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+    Application.get_env(:kala_app, :data_dir) || Path.join(System.user_home!(), ".kala")
   end
 end

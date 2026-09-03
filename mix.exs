@@ -1,24 +1,24 @@
-defmodule KinoTheatre.MixProject do
+defmodule Kala.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :kino_app,
+      app: :kala_app,
       version: "0.1.17",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
-      escript: [main_module: KinoTheatre.CLI, path: "kino"],
+      escript: [main_module: Kala.CLI, path: "kala"],
       releases: releases(),
       deps: deps()
     ]
   end
 
-  # `MIX_ENV=prod mix release kino` → burrito_out/kino_linux_x86_64:
+  # `MIX_ENV=prod mix release kala` → burrito_out/kala_linux_x86_64:
   # a single self-contained binary (BEAM bundled, no Erlang needed on the
   # user's machine) — the artifact package managers ship.
   defp releases do
     [
-      kino: [
+      kala: [
         steps: [:assemble, &clean_stale_erts/1, &Burrito.wrap/1],
         burrito: [
           targets: [
@@ -44,7 +44,7 @@ defmodule KinoTheatre.MixProject do
 
   def application do
     [
-      mod: {KinoTheatre.Application, []},
+      mod: {Kala.Application, []},
       extra_applications: [:logger]
     ]
   end

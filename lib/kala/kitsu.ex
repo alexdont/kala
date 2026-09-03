@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Kitsu do
+defmodule Kala.Kitsu do
   @moduledoc """
   Anime-native metadata from Kitsu (kitsu.io JSON:API) — our equivalent of the
   Stremio "Anime Kitsu" addon. Used to get proper episode lists (with absolute

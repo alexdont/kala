@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Sources do
+defmodule Kala.Sources do
   @moduledoc """
   Torrent source discovery. Two backends feed a common source struct:
 
@@ -384,7 +384,7 @@ defmodule KinoTheatre.Sources do
   # signal Stremio users see. Those sources are near-guaranteed instant plays,
   # so they get ranked to the top.
   defp torrentio_base do
-    case Application.get_env(:kino_app, :rd_token) do
+    case Application.get_env(:kala_app, :rd_token) do
       token when is_binary(token) and token != "" -> "#{@torrentio}/realdebrid=#{token}"
       _ -> @torrentio
     end
@@ -732,7 +732,7 @@ defmodule KinoTheatre.Sources do
   end
 
   # Wrong-language releases sink far below everything. With a non-English
-  # preference (KINO_LANG=ru etc.), releases explicitly tagged with that
+  # preference (KALA_LANG=ru etc.), releases explicitly tagged with that
   # language get a half-tier boost — dubs float above untagged (≈ English)
   # releases inside each resolution tier — and multi/dual gets half that.
   # An English preference keeps the neutral behavior: untagged already is
@@ -748,7 +748,7 @@ defmodule KinoTheatre.Sources do
   @lang_wrong -10_000_000_000_000_000
 
   defp lang_score(source) do
-    preferred = KinoTheatre.Config.lang()
+    preferred = Kala.Config.lang()
     langs = Map.get(source, :langs) || []
 
     cond do
@@ -833,7 +833,7 @@ defmodule KinoTheatre.Sources do
 
   defp to_int(_), do: 0
 
-  defp jackett_url, do: Application.get_env(:kino_app, :jackett_url)
-  defp jackett_key, do: Application.get_env(:kino_app, :jackett_api_key)
-  defp jackett_indexer, do: Application.get_env(:kino_app, :jackett_indexer) || "all"
+  defp jackett_url, do: Application.get_env(:kala_app, :jackett_url)
+  defp jackett_key, do: Application.get_env(:kala_app, :jackett_api_key)
+  defp jackett_indexer, do: Application.get_env(:kala_app, :jackett_indexer) || "all"
 end

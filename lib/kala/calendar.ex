@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Calendar do
+defmodule Kala.Calendar do
   @moduledoc """
   Release calendar for the watchlist: when episodes of pinned shows/anime
   air, and when pinned movies hit theaters / digital (digital = the moment
@@ -18,7 +18,7 @@ defmodule KinoTheatre.Calendar do
   "anime", "search_title").
   """
 
-  alias KinoTheatre.{Tmdb, Watchlist}
+  alias Kala.{Tmdb, Watchlist}
 
   @cache_ttl_s 6 * 3600
   @past_days 7
@@ -295,7 +295,7 @@ defmodule KinoTheatre.Calendar do
   end
 
   defp cache_path(cache_key) do
-    dir = Path.join(System.tmp_dir!(), "kino-calendar")
+    dir = Path.join(System.tmp_dir!(), "kala-calendar")
     File.mkdir_p!(dir)
     key = :erlang.md5(cache_key) |> Base.encode16(case: :lower) |> binary_part(0, 16)
     Path.join(dir, key)

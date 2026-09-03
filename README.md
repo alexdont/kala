@@ -1,11 +1,11 @@
-# Kino
+# Kala
 
 A standalone command-line app for watching movies and shows through your own
 debrid account — no browser, no Electron, no background app. Type a title,
 pick an episode and a source, and **mpv** opens playing the stream. That's it.
 
 ```
-$ kino watch "in the grey"
+$ kala watch "in the grey"
 what to watch? (12 results, all shown)
 > In the Grey (2026) · movie · ★7.1
   ...
@@ -16,7 +16,7 @@ which source? (all checked + playable)
 playing in mpv: In.the.Grey.2026.2160p.WEB-DL.mkv
 ```
 
-Kino is a **single binary** — not a library, not a service, nothing to add to
+Kala is a **single binary** — not a library, not a service, nothing to add to
 a project. (Unrelated to the `kino` package on hex.pm, which is Livebook's
 widget library.)
 
@@ -24,7 +24,7 @@ widget library.)
 
 - **Title-first search** via TMDB: movies and shows, season/episode pickers,
   spelling-variant matching ("gray" finds "Grey"), year hints
-  (`kino watch "heat 1995"`).
+  (`kala watch "heat 1995"`).
 - **Only playable sources are offered.** Every source is actually resolved on
   your debrid provider before it reaches the picker — dead torrents, DMCA'd
   files, and 0-seeder stalls are filtered out with the reason shown.
@@ -32,13 +32,13 @@ widget library.)
 - **Ranked like you'd want**: releases already in your debrid library first,
   provider-confirmed-cached next, then resolution tier with bigger files
   first. Releases in languages other than yours sink to the bottom
-  (`KINO_LANG`, default English; dual-audio stays).
-- **Continue watching**: `kino continue` jumps back to the exact episode,
+  (`KALA_LANG`, default English; dual-audio stays).
+- **Continue watching**: `kala continue` jumps back to the exact episode,
   source, **and second** you left off at — the position is checkpointed every
   5 seconds while mpv plays, so it survives player crashes and power loss.
   It's remembered per title/episode, not per stream, so switching to a
   different source resumes from the same spot.
-- **Scriptable**: `kino search`/`resolve`/`play` emit JSON when piped, so the
+- **Scriptable**: `kala search`/`resolve`/`play` emit JSON when piped, so the
   interactive flow is just one frontend — overlays and scripts are another.
 
 ## Install
@@ -51,8 +51,8 @@ pickers much nicer).
 
 ```sh
 sudo pacman -S --needed mpv fzf   # or your distro's equivalent
-curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_linux_x86_64
-chmod +x kino && mkdir -p ~/.local/bin && mv kino ~/.local/bin/
+curl -Lo kala https://github.com/alexdont/kala/releases/latest/download/kala_linux_x86_64
+chmod +x kala && mkdir -p ~/.local/bin && mv kala ~/.local/bin/
 ```
 
 **Windows** — use WSL2 (the built-in Ubuntu console; Windows 11 or updated
@@ -61,34 +61,34 @@ Linux install:
 
 ```sh
 sudo apt install -y mpv fzf chafa
-curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_linux_x86_64
-chmod +x kino && mkdir -p ~/.local/bin && mv kino ~/.local/bin/
+curl -Lo kala https://github.com/alexdont/kala/releases/latest/download/kala_linux_x86_64
+chmod +x kala && mkdir -p ~/.local/bin && mv kala ~/.local/bin/
 ```
 
 **macOS (Apple Silicon)** — untested build, feedback welcome:
 
 ```sh
 brew install mpv fzf
-curl -Lo kino https://github.com/alexdont/kino/releases/latest/download/kino_macos_aarch64
-chmod +x kino && mv kino /usr/local/bin/
+curl -Lo kala https://github.com/alexdont/kala/releases/latest/download/kala_macos_aarch64
+chmod +x kala && mv kala /usr/local/bin/
 ```
 
 **From source** (needs Elixir; zig + p7zip only for the standalone build):
 
 ```sh
 mix deps.get
-mix escript.build               # → ./kino (needs Erlang installed to run)
-MIX_ENV=prod mix release kino   # → burrito_out/kino_* (self-contained)
+mix escript.build               # → ./kala (needs Erlang installed to run)
+MIX_ENV=prod mix release kala   # → burrito_out/kala_* (self-contained)
 ```
 
 ## Configure
 
-Run `kino setup` — an interactive wizard that asks for your two keys,
+Run `kala setup` — an interactive wizard that asks for your two keys,
 validates them live against the real services, and writes the config for
-you. (`kino doctor` later checks every binary, key, and service kino talks
+you. (`kala doctor` later checks every binary, key, and service kala talks
 to, with latencies.)
 
-Or put keys in `~/.config/kino/config` by hand (env vars with the same
+Or put keys in `~/.config/kala/config` by hand (env vars with the same
 names also work and take precedence):
 
 ```
@@ -99,42 +99,42 @@ TMDB_API_KEY=...
 # optional second debrid provider: https://torbox.app/settings
 #TORBOX_API_KEY=...
 # preferred audio language for ranking (dual/multi releases always rank normally)
-KINO_LANG=en
+KALA_LANG=en
 # poster previews: auto (sharp pixel graphics), ascii (colored ASCII art),
 # ascii-bg (ASCII with painted backgrounds), off
-KINO_POSTERS=auto
+KALA_POSTERS=auto
 # intro/credits skipping — detected via AniSkip (anime) + named chapters:
 #   ask (default): a "Skip — hold TAB" button appears on the video, skip is your call
 #   auto: skip immediately · off: disable (hold Tab = +85s works in ask/auto)
-KINO_SKIP=ask
+KALA_SKIP=ask
 # autoplay the next episode when one ends ("on" to enable — off by default;
 # --binge or the post-play menu's autoplay entry do it per session)
-KINO_AUTOPLAY=off
+KALA_AUTOPLAY=off
 # optional: Jackett/Prowlarr (more indexers), OpenSubtitles, Jimaku
 ```
 
-`kino config` shows which keys are set.
+`kala config` shows which keys are set.
 
 ## Commands
 
 | command | what it does |
 | --- | --- |
-| `kino watch "<title>"` | the whole flow: title → episode → source → mpv |
-| `kino resume` | instantly resume the last thing you watched |
-| `kino continue` | pick from your watch history |
-| `kino search "<query>"` | list raw sources (JSON when piped) |
-| `kino resolve <magnet>` | magnet → direct stream URL (JSON) |
-| `kino play <magnet\|url>` | resolve and launch mpv directly |
-| `kino setup` | first-run wizard: keys in, validated live |
-| `kino doctor` | health-check binaries, keys, and services |
-| `kino config` | show config status |
+| `kala watch "<title>"` | the whole flow: title → episode → source → mpv |
+| `kala resume` | instantly resume the last thing you watched |
+| `kala continue` | pick from your watch history |
+| `kala search "<query>"` | list raw sources (JSON when piped) |
+| `kala resolve <magnet>` | magnet → direct stream URL (JSON) |
+| `kala play <magnet\|url>` | resolve and launch mpv directly |
+| `kala setup` | first-run wizard: keys in, validated live |
+| `kala doctor` | health-check binaries, keys, and services |
+| `kala config` | show config status |
 
-`kino watch --raw "<text>"` skips TMDB and searches indexers by text.
+`kala watch --raw "<text>"` skips TMDB and searches indexers by text.
 
 ## Notes
 
-Kino ships no content and hosts nothing. It searches public indexers and
+Kala ships no content and hosts nothing. It searches public indexers and
 drives **your own** debrid subscription and API keys, the same way a Stremio
 debrid addon does; takedown responses from the provider are respected and
-remembered. Real-Debrid is the only provider wired today, but the resolve
-step sits behind a behaviour so AllDebrid/TorBox/Premiumize can be added.
+remembered. Real-Debrid and TorBox are wired today, and the resolve
+step sits behind a behaviour so AllDebrid/Premiumize can be added too.

@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Remux do
+defmodule Kala.Remux do
   @moduledoc """
   Local, on-the-fly HLS remuxer. Given a (range-seekable) source URL, ffmpeg
   stream-copies it into HLS segments on local disk — near-instant and lossless
@@ -8,13 +8,13 @@ defmodule KinoTheatre.Remux do
   browser can seek anywhere the moment that part is segmented (seconds), which
   fixes the slow-seek problem of remote on-demand transcoders.
 
-  This is the public facade; `KinoTheatre.Remux.Worker` runs one ffmpeg per id.
+  This is the public facade; `Kala.Remux.Worker` runs one ffmpeg per id.
   """
 
-  alias KinoTheatre.Remux.Worker
+  alias Kala.Remux.Worker
 
-  @registry KinoTheatre.Remux.Registry
-  @supervisor KinoTheatre.Remux.Supervisor
+  @registry Kala.Remux.Registry
+  @supervisor Kala.Remux.Supervisor
 
   # Remuxed segments are kept on disk this long so a page reload (or replaying
   # the same title) reuses them instead of re-running ffmpeg from the start.

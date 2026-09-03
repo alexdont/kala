@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Blocklist do
+defmodule Kala.Blocklist do
   @moduledoc """
   Set of torrent hashes known to be unresolvable — mostly Real-Debrid DMCA
   takedowns (HTTP 451 `infringing_file`), which are global and permanent, so
@@ -53,7 +53,7 @@ defmodule KinoTheatre.Blocklist do
   end
 
   defp path do
-    dir = Application.get_env(:kino_app, :data_dir) || Path.join(System.user_home!(), ".kino")
+    dir = Application.get_env(:kala_app, :data_dir) || Path.join(System.user_home!(), ".kala")
     Path.join(dir, "blocklist")
   end
 end

@@ -1,4 +1,4 @@
-defmodule KinoTheatre.Subtitles do
+defmodule Kala.Subtitles do
   @moduledoc """
   Convert subtitle files to WebVTT, which is the only format an HTML5
   `<video>` `<track>` accepts. Handles SubRip (.srt) and Advanced SubStation
