@@ -113,28 +113,90 @@ defmodule KinoTheatre.Sources do
   Returns `{:ok, sources, :episode | :series | :mixed}`.
   """
   def anime_episode_search(title, episode, opts \\ []) do
-    case Keyword.get(opts, :anidb_id) do
-      nil ->
-        text_episode_search(title, episode)
-
-      aid ->
-        # Exact-show results by AniDB id; episode-specific releases first, then
-        # this show's batch/season packs. Fall back to text if AniDB has nothing.
-        case search_animetosho_aid(aid) do
-          {:ok, all} when all != [] ->
-            {ep, rest} = Enum.split_with(all, &release_has_episode?(&1.name, episode))
-
-            sources =
-              (Enum.sort_by(ep, &score/1, :desc) ++ Enum.sort_by(rest, &score/1, :desc))
-              |> Enum.uniq_by(& &1.hash)
-              |> Enum.take(30)
-
-            {:ok, sources, :mixed}
-
-          _ ->
-            text_episode_search(title, episode)
+    # Torrentio by Kitsu id runs alongside the Nyaa/AnimeTosho search — it's
+    # the only anime path that reaches the big public/Russian trackers.
+    torrentio =
+      Task.async(fn ->
+        case torrentio_anime(Keyword.get(opts, :kitsu_id), episode) do
+          {:ok, list} -> list
+          _ -> []
         end
+      end)
+
+    {base, scope} =
+      case Keyword.get(opts, :anidb_id) do
+        nil ->
+          case text_episode_search(title, episode) do
+            {:ok, sources, scope} -> {sources, scope}
+            _ -> {[], :episode}
+          end
+
+        aid ->
+          # Exact-show results by AniDB id; episode-specific first, then batches.
+          case search_animetosho_aid(aid) do
+            {:ok, all} when all != [] ->
+              {ep, rest} = Enum.split_with(all, &release_has_episode?(&1.name, episode))
+              {Enum.sort_by(ep, &score/1, :desc) ++ Enum.sort_by(rest, &score/1, :desc), :mixed}
+
+            _ ->
+              case text_episode_search(title, episode) do
+                {:ok, sources, scope} -> {sources, scope}
+                _ -> {[], :episode}
+              end
+          end
+      end
+
+    tor = Task.await(torrentio, 25_000)
+
+    sources =
+      (tor ++ base)
+      |> Enum.filter(&anime_release_ok?(&1.name, episode, Keyword.get(opts, :search_title)))
+      |> Enum.sort_by(&score/1, :desc)
+      |> Enum.uniq_by(& &1.hash)
+      |> Enum.take(40)
+
+    {:ok, sources, scope}
+  end
+
+  # Reject releases that clearly belong to a different season or a different
+  # single episode than the one being watched — the fuzzy title search and
+  # even id-scoped feeds occasionally leak franchise-wide.
+  defp anime_release_ok?(name, episode, search_title) do
+    wanted = wanted_season(search_title)
+
+    season_ok? =
+      case Regex.run(~r/\bs(?:eason)?\s*0*(\d+)\s*e/i, name) || Regex.run(~r/\bs0*(\d+)\b/i, name) do
+        [_, s] -> String.to_integer(s) == wanted
+        _ -> true
+      end
+
+    # A batch/range (contains the episode, RD extracts it) or a release that
+    # names *this* episode is fine; a single release naming a *different*
+    # episode is not.
+    episode_ok? = batch?(name) or release_has_episode?(name, episode) or not names_single_episode?(name)
+
+    season_ok? and episode_ok?
+  end
+
+  # Season number implied by the picked entry's title ("2nd Season" → 2,
+  # "Season 3"/"3rd Season" → 3); base entries and movies are season 1.
+  defp wanted_season(nil), do: 1
+
+  defp wanted_season(title) do
+    cond do
+      m = Regex.run(~r/\bseason\s*(\d+)\b/i, title) -> String.to_integer(Enum.at(m, 1))
+      m = Regex.run(~r/\b(\d+)(?:st|nd|rd|th)\s+season\b/i, title) -> String.to_integer(Enum.at(m, 1))
+      true -> 1
     end
+  end
+
+  defp batch?(name) do
+    Regex.match?(~r/\bbatch|complete|\bseason\b|\bS\d+\b(?!E)|\d+\s*[-~]\s*\d+|\bvol\b/i, name)
+  end
+
+  # Does the name pin a single episode number (E12 / - 12 / _12_) at all?
+  defp names_single_episode?(name) do
+    Regex.match?(~r/\be\d{1,3}\b|(?:^|[\s_\-\[])\d{1,3}(?:$|[\s_\-\]v])/i, name)
   end
 
   defp text_episode_search(title, episode) do
@@ -287,6 +349,19 @@ defmodule KinoTheatre.Sources do
 
   @doc "Torrentio sources for a TV episode, by IMDb id + season + episode."
   def torrentio_series(imdb_id, season, episode), do: fetch_torrentio("series/#{imdb_id}:#{season}:#{episode}")
+
+  @doc """
+  Torrentio anime sources by Kitsu id — the anime-native path Torrentio
+  supports (kitsu:ID:EPISODE, absolute numbering). This is what brings the
+  big public/Russian trackers (Rutor etc.) into the anime flow that Nyaa and
+  AnimeTosho don't carry. `{:ok, [source]}`; `{:ok, []}` when no kitsu id.
+  """
+  def torrentio_anime(nil, _episode), do: {:ok, []}
+  def torrentio_anime(kitsu_id, episode), do: fetch_torrentio("series/kitsu:#{kitsu_id}:#{episode}")
+
+  @doc "Torrentio anime movie by Kitsu id."
+  def torrentio_anime_movie(nil), do: {:ok, []}
+  def torrentio_anime_movie(kitsu_id), do: fetch_torrentio("movie/kitsu:#{kitsu_id}")
 
   defp fetch_torrentio(path) do
     url = "#{torrentio_base()}/stream/#{path}.json"
@@ -662,27 +737,45 @@ defmodule KinoTheatre.Sources do
   # releases inside each resolution tier — and multi/dual gets half that.
   # An English preference keeps the neutral behavior: untagged already is
   # English in practice, so there's nothing to boost over.
+  # Boosts are whole-tier-sized (>= @tier so they can outrank resolution) —
+  # when the user sets a non-English language, releases in that language (or
+  # dual/multi, which contain it) should sort ABOVE a higher-res release that
+  # doesn't have it. A dedicated single-language match beats multi; a release
+  # in a *different* named language sinks far below everything.
+  @tier 1_000_000_000_000_000
+  @lang_exact 8 * @tier
+  @lang_multi 6 * @tier
+  @lang_wrong -10_000_000_000_000_000
+
   defp lang_score(source) do
     preferred = KinoTheatre.Config.lang()
     langs = Map.get(source, :langs) || []
 
     cond do
+      preferred == "en" ->
+        # English default: untagged (≈English) and multi are neutral, only a
+        # wrong named language sinks — no boosting to reorder resolution.
+        cond do
+          langs != [] and "en" in langs -> 0
+          langs != [] -> @lang_wrong
+          Map.get(source, :lang) in [nil, "multi", "en"] -> 0
+          true -> @lang_wrong
+        end
+
       # Torrentio's parsed language list is authoritative when present.
-      langs != [] and preferred in langs and preferred != "en" ->
-        if length(langs) == 1, do: 500_000_000_000_000, else: 250_000_000_000_000
-
-      langs != [] and preferred in langs ->
-        0
-
       langs != [] ->
-        -10_000_000_000_000_000
+        cond do
+          preferred in langs and length(langs) == 1 -> @lang_exact
+          preferred in langs -> @lang_multi
+          true -> @lang_wrong
+        end
 
       true ->
         case Map.get(source, :lang) do
+          ^preferred -> @lang_exact
+          "multi" -> @lang_multi
           nil -> 0
-          "multi" -> if preferred == "en", do: 0, else: 250_000_000_000_000
-          ^preferred -> if preferred == "en", do: 0, else: 500_000_000_000_000
-          _ -> -10_000_000_000_000_000
+          _ -> @lang_wrong
         end
     end
   end

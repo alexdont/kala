@@ -22,22 +22,34 @@ defmodule KinoTheatre.Position do
   local opts = { file = "", tracks = "" }
   options.read_options(opts, "kino")
 
-  -- Track memory: whenever the user switches subtitle or audio track, save
-  -- "sid aid" plus the media filename (ids are only meaningful for the same
-  -- file — kino checks the filename before restoring). Saves are gated on
-  -- file-loaded so teardown/no-track states can't clobber a real choice.
+  -- Per-series track memory: when the user switches audio/subtitle track,
+  -- remember the LANGUAGE (not the track id — ids differ between releases,
+  -- languages carry across every episode/season). Saved as "ALANG SLANG"
+  -- (slang "off" = subtitles disabled). kino applies it to the whole series
+  -- via --alang/--slang, overriding the global default just for this show.
+  -- A 2s settle window after load ignores mpv's own initial auto-selection
+  -- so only a real manual change is recorded.
   local ready = false
-  mp.register_event("file-loaded", function() ready = true end)
+  local settled = false
+
+  mp.register_event("file-loaded", function()
+    ready = true
+    settled = false
+    mp.add_timeout(2, function() settled = true end)
+  end)
   mp.register_event("end-file", function() ready = false end)
 
   local function save_tracks()
-    if opts.tracks == "" or not ready then return end
-    local sid = mp.get_property("sid") or "no"
-    local aid = mp.get_property("aid") or "no"
-    local fname = mp.get_property("filename") or ""
+    if opts.tracks == "" or not ready or not settled then return end
+    local alang = mp.get_property("current-tracks/audio/lang")
+    local slang = mp.get_property("current-tracks/sub/lang")
+    -- No selected sub track = subtitles off (the user disabled them).
+    if slang == nil then slang = "off" end
+    -- Untagged audio has no language to remember — skip rather than store junk.
+    if alang == nil or alang == "" then return end
     local f = io.open(opts.tracks, "w")
     if f then
-      f:write(sid .. " " .. aid .. "\\n" .. fname)
+      f:write(alang .. " " .. slang)
       f:close()
     end
   end
@@ -103,7 +115,9 @@ defmodule KinoTheatre.Position do
 
       key ->
         file = position_file(key)
-        tracks = tracks_file(key)
+        # Track memory is per-SERIES (not per-episode/file): a language
+        # choice on one episode applies to every episode and season.
+        tracks = tracks_file(series_key(ctx))
 
         # -append: a plain --script-opts= would replace the whole list and
         # wipe other scripts' opts (e.g. the skip windows).
@@ -112,7 +126,7 @@ defmodule KinoTheatre.Position do
             "--script=#{script_path()}",
             "--script-opts-append=kino-file=#{file}",
             "--script-opts-append=kino-tracks=#{tracks}"
-          ] ++ track_args(tracks, filename)
+          ] ++ track_args(tracks)
 
         case read(file) do
           nil -> {args, nil}
@@ -123,20 +137,31 @@ defmodule KinoTheatre.Position do
     _ -> {[], nil}
   end
 
-  # Restore "--sid=N --aid=N" only when the remembered tracks belong to this
-  # exact file — ids mean nothing on a different release. "no" (subtitles
-  # deliberately off) restores too.
-  defp track_args(tracks_path, filename) do
-    with true <- is_binary(filename),
-         {:ok, contents} <- File.read(tracks_path),
-         [ids, stored_name] <- String.split(contents, "\n", parts: 2),
-         true <- String.trim(stored_name) == filename,
-         [sid, aid] <- String.split(String.trim(ids), " ", parts: 2) do
-      ["--sid=#{sid}", "--aid=#{aid}"]
+  # Apply the series' remembered languages as --alang/--slang, overriding the
+  # global default just for this show. Stored as "ALANG SLANG" (slang "off" =
+  # subtitles disabled). Languages carry across releases; track ids don't.
+  defp track_args(tracks_path) do
+    with {:ok, contents} <- File.read(tracks_path),
+         [alang, slang] <- contents |> String.trim() |> String.split(" ", parts: 2) do
+      audio = if alang in ["", "no", "off"], do: [], else: ["--aid=auto", "--alang=#{KinoTheatre.Player.lang_codes(alang)}"]
+
+      subs =
+        case slang do
+          s when s in ["off", "no", ""] -> ["--sid=no"]
+          s -> ["--sid=auto", "--slang=#{KinoTheatre.Player.lang_codes(s)}", "--sub-auto=fuzzy"]
+        end
+
+      audio ++ subs
     else
       _ -> []
     end
   end
+
+  # Series-level key for track memory: type + tmdb id, no season/episode.
+  defp series_key(%{type: type, tmdb_id: id}) when type in ["movie", "tv"] and not is_nil(id),
+    do: "#{type}-#{id}"
+
+  defp series_key(_), do: "unknown"
 
   defp tracks_file(key) do
     dir = Path.join(data_dir(), "tracks")

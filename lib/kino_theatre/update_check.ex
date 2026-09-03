@@ -6,7 +6,7 @@ defmodule KinoTheatre.UpdateCheck do
   don't hit GitHub every time, and every failure path degrades to :unknown.
   """
 
-  @repo "alexdont/kino"
+  @repo "alexdont/kala"
   @cache_ttl_s 6 * 3600
 
   @doc "Returns `{:current, vsn}`, `{:update, current, latest}`, or `:unknown`."

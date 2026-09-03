@@ -27,6 +27,26 @@ defmodule KinoTheatre.Kitsu do
     end
   end
 
+  @doc "The Kitsu anime id for a MyAnimeList id (reverse mapping) — feeds Torrentio's kitsu: anime path."
+  def kitsu_id_from_mal(mal) when not is_nil(mal) do
+    params = ["filter[externalSite]": "myanimelist/anime", "filter[externalId]": to_string(mal), include: "item"]
+
+    case get("/mappings", params) do
+      {:ok, %{"included" => inc}} when is_list(inc) ->
+        case Enum.find(inc, &(&1["type"] == "anime")) do
+          %{"id" => id} -> {:ok, id}
+          _ -> {:error, :no_mapping}
+        end
+
+      _ ->
+        {:error, :no_mapping}
+    end
+  rescue
+    _ -> {:error, :no_mapping}
+  end
+
+  def kitsu_id_from_mal(_), do: {:error, :no_mapping}
+
   @doc """
   Search anime by text. Returns `{:ok, [anime]}` best-match first.
 

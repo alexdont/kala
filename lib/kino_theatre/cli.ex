@@ -792,7 +792,7 @@ defmodule KinoTheatre.CLI do
             :yellow,
             "  ⬆ v#{current} → v#{latest} available: ",
             :reset,
-            "https://github.com/alexdont/kino/releases/latest\n"
+            "https://github.com/alexdont/kala/releases/latest\n"
           ])
         )
 
@@ -1070,8 +1070,16 @@ defmodule KinoTheatre.CLI do
         q = Sources.anime_movie_query(search_title)
 
         case Sources.search(q, backend: :anime) do
-          {:ok, sources} -> with_library(q, sources) |> probe_and_pick([], ctx)
-          {:error, reason} -> die("anime source search failed: #{inspect(reason)}")
+          {:ok, sources} ->
+            tor = case Sources.torrentio_anime_movie(kitsu.kitsu_id) do
+              {:ok, list} -> list
+              _ -> []
+            end
+
+            with_library(q, tor ++ sources) |> probe_and_pick([], ctx)
+
+          {:error, reason} ->
+            die("anime source search failed: #{inspect(reason)}")
         end
 
       {"tv", []} ->
@@ -1092,7 +1100,7 @@ defmodule KinoTheatre.CLI do
             back()
 
         n = episode.number
-        sources = anime_episode_sources(search_title, n, kitsu.anidb)
+        sources = anime_episode_sources(search_title, n, kitsu.anidb, kitsu.kitsu_id)
         q = Sources.anime_episode_query(search_title, n)
 
         with_library(q, sources)
@@ -1115,7 +1123,7 @@ defmodule KinoTheatre.CLI do
   defp kitsu_pick(name) do
     case Kitsu.search(name) do
       {:ok, []} ->
-        %{anime: nil, episodes: [], anidb: nil}
+        %{anime: nil, episodes: [], anidb: nil, kitsu_id: nil}
 
       {:ok, [only]} ->
         kitsu_selected(only)
@@ -1124,7 +1132,9 @@ defmodule KinoTheatre.CLI do
         # Chronological, not by title — "Part 2"/"Final Season" naming makes
         # alphabetical order useless; year is the real season order. Stable
         # sort keeps same-year entries (S1 + its Part 2) in sane order.
-        results = Enum.sort_by(results, &(&1.year || "9999"))
+        # Year ascending, but within a year the main TV season comes before
+        # its ONA/OVA/special/movie spin-offs (watch order, not clutter first).
+        results = Enum.sort_by(results, &{&1.year || "9999", subtype_rank(&1.subtype), &1.title})
 
         case pick(results, &describe_kitsu/1, "#{name} — which season/entry?", & &1.poster) do
           nil -> back()
@@ -1132,7 +1142,7 @@ defmodule KinoTheatre.CLI do
         end
 
       _ ->
-        %{anime: nil, episodes: [], anidb: nil}
+        %{anime: nil, episodes: [], anidb: nil, kitsu_id: nil}
     end
   end
 
@@ -1141,22 +1151,41 @@ defmodule KinoTheatre.CLI do
   defp kitsu_lookup(name) do
     case Kitsu.search(name) do
       {:ok, [anime | _]} -> kitsu_selected(anime)
-      _ -> %{anime: nil, episodes: [], anidb: nil}
+      _ -> %{anime: nil, episodes: [], anidb: nil, kitsu_id: nil}
     end
   end
 
   defp kitsu_selected(anime) do
-    # AniList-sourced entries (Kitsu down/slow) have no Kitsu id — no AniDB
-    # mapping for them; tracker search falls back to the release title.
+    # AniList-sourced entries (Kitsu down/slow) have no Kitsu id. Recover one
+    # from the MAL id when possible — Torrentio's anime path is keyed by
+    # Kitsu id, so this is what lets Russian/public trackers reach anime.
+    kitsu_id =
+      anime.id ||
+        case anime[:mal_id] && Kitsu.kitsu_id_from_mal(anime.mal_id) do
+          {:ok, id} -> id
+          _ -> nil
+        end
+
     anidb =
-      with id when not is_nil(id) <- anime.id,
+      with id when not is_nil(id) <- kitsu_id,
            {:ok, mapped} <- Kitsu.anidb_id(id) do
         mapped
       else
         _ -> nil
       end
 
-    %{anime: anime, episodes: kitsu_episode_list(anime), anidb: anidb}
+    %{anime: anime, episodes: kitsu_episode_list(anime), anidb: anidb, kitsu_id: kitsu_id}
+  end
+
+  # TV seasons sort ahead of everything else within a year; movies next,
+  # then the OVA/ONA/special extras. Handles AniList (TV/TV_SHORT/MOVIE/
+  # SPECIAL/OVA/ONA) and Kitsu (TV/movie/special/…) casing.
+  defp subtype_rank(subtype) do
+    case subtype |> to_string() |> String.downcase() do
+      t when t in ["tv", "tv_short"] -> 0
+      "movie" -> 1
+      _ -> 2
+    end
   end
 
   defp describe_kitsu(a) do
@@ -1177,11 +1206,15 @@ defmodule KinoTheatre.CLI do
 
   # Returns episode-specific releases first, then the show's batch packs
   # (either can contain the episode; RD's file picker extracts it).
-  defp anime_episode_sources(search_title, episode, anidb) do
-    case Sources.anime_episode_search(search_title, episode, anidb_id: anidb) do
-      {:ok, sources, _scope} -> sources
-      {:error, reason} -> die("anime source search failed: #{inspect(reason)}")
-    end
+  defp anime_episode_sources(search_title, episode, anidb, kitsu_id) do
+    {:ok, sources, _scope} =
+      Sources.anime_episode_search(search_title, episode,
+        anidb_id: anidb,
+        kitsu_id: kitsu_id,
+        search_title: search_title
+      )
+
+    sources
   end
 
   # Fold per-episode titles/air dates into the bare numbered list, and
@@ -1769,17 +1802,23 @@ defmodule KinoTheatre.CLI do
   end
 
   defp countdown_next(ctx) do
-    next = %{ctx | episode: ctx.episode + 1}
-    IO.puts(:stderr, "")
+    case next_target(ctx) do
+      nil ->
+        IO.puts(:stderr, "\n  ✓ that was the last episode available — binge complete")
 
-    for n <- 10..1//-1 do
-      IO.write(:stderr, "\r  ⚡ next: #{playing_desc(next)} in #{n}s… (Ctrl-C stops) ")
-      Process.sleep(1_000)
+      next ->
+        preview = %{ctx | season: next.season, episode: next.episode}
+        IO.puts(:stderr, "")
+
+        for n <- 10..1//-1 do
+          IO.write(:stderr, "\r  ⚡ next: #{playing_desc(preview)} in #{n}s… (Ctrl-C stops) ")
+          Process.sleep(1_000)
+        end
+
+        IO.puts(:stderr, "")
+        Process.put(:kino_auto, true)
+        play_to(ctx, next)
     end
-
-    IO.puts(:stderr, "")
-    Process.put(:kino_auto, true)
-    play_adjacent(ctx, 1)
   end
 
   # ── post-play controls (mov-cli style) ────────────────────────────
@@ -1830,11 +1869,12 @@ defmodule KinoTheatre.CLI do
       end
 
       episodic? = is_integer(ctx.episode)
+      next = if episodic?, do: next_target(ctx)
 
       items =
         List.flatten([
-          if(episodic?, do: [{:next, "⏭  next episode"}], else: []),
-          if(episodic?, do: [{:binge, "⚡  autoplay — chain next episodes"}], else: []),
+          if(next, do: [{:next, "⏭  #{next.label}"}], else: []),
+          if(next, do: [{:binge, "⚡  autoplay — chain next episodes"}], else: []),
           {:replay, "↻  replay"},
           {:imdb, "★  rate on IMDb — open in browser"},
           {:switch, "⇄  try another source"},
@@ -1847,7 +1887,7 @@ defmodule KinoTheatre.CLI do
         ])
 
       case pick(items, &elem(&1, 1), "what next?") do
-        {:next, _} -> play_adjacent(ctx, 1)
+        {:next, _} -> play_to(ctx, next)
         {:binge, _} ->
           Process.put(:kino_binge, true)
           binge_wait(ctx)
@@ -1880,11 +1920,120 @@ defmodule KinoTheatre.CLI do
   # Next/previous episode: rebuild the play context with episode ± 1 and
   # rerun the full source flow (which respects --auto and re-enters this
   # menu after launch — that's the binge loop).
-  defp play_adjacent(ctx, delta) do
-    ctx = %{ctx | episode: ctx.episode + delta}
+  # Play a specific season/episode target (from next_target). Rolls into the
+  # next season when a season ended.
+  defp play_to(ctx, %{season: s, episode: e}) do
+    ctx = %{ctx | season: s, episode: e}
     clear_screen()
     IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources…")
     play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+  end
+
+  defp play_adjacent(ctx, -1) do
+    ctx = %{ctx | episode: ctx.episode - 1}
+    clear_screen()
+    IO.puts(:stderr, "#{playing_desc(ctx)} — finding sources…")
+    play_entry(ctx_entry(ctx), rd_opts(ctx.season, ctx.episode))
+  end
+
+  # What "next" points at: the next episode in this season, the first episode
+  # of the next season when this season is done, or nil when there's genuinely
+  # nothing left (last aired episode / last season). Cached per title+ep so
+  # re-showing the menu doesn't re-hit the network.
+  defp next_target(%{episode: e} = ctx) when is_integer(e) do
+    cache = {:next_target, ctx.tmdb_id, ctx.season, e, ctx[:anime]}
+
+    case Process.get(cache, :miss) do
+      :miss ->
+        result = compute_next_target(ctx)
+        Process.put(cache, result)
+        result
+
+      cached ->
+        cached
+    end
+  end
+
+  defp next_target(_ctx), do: nil
+
+  defp compute_next_target(%{anime: true} = ctx) do
+    # Anime uses absolute numbering within the picked entry; the next entry
+    # (sequel season) is a separate manual pick, so we only roll within it.
+    count = anime_episode_count(ctx[:search_title] || ctx.title)
+
+    if is_integer(count) and ctx.episode >= count,
+      do: nil,
+      else: %{season: ctx.season, episode: ctx.episode + 1, label: "next episode"}
+  end
+
+  defp compute_next_target(%{season: s} = ctx) when is_integer(s) do
+    cur = tv_season_episode_count(ctx.tmdb_id, s)
+
+    cond do
+      # More (aired) episodes left in this season.
+      is_integer(cur) and ctx.episode < cur ->
+        %{season: s, episode: ctx.episode + 1, label: "next episode"}
+
+      # Season finished — roll into the next season if it has aired episodes.
+      is_integer(cur) and tv_season_episode_count(ctx.tmdb_id, s + 1) not in [nil, 0] ->
+        %{season: s + 1, episode: 1, label: "next season (S#{pad2(s + 1)})"}
+
+      # Couldn't read counts — offer optimistically; a dead end is handled
+      # gracefully at play time.
+      is_nil(cur) ->
+        %{season: s, episode: ctx.episode + 1, label: "next episode"}
+
+      # This season is done and there's no next season: the end.
+      true ->
+        nil
+    end
+  end
+
+  defp compute_next_target(ctx),
+    do: %{season: ctx.season, episode: ctx.episode + 1, label: "next episode"}
+
+  # Aired episodes in a TMDB season (air_date on or before today), or nil on
+  # failure. Cached in-process.
+  defp tv_season_episode_count(tmdb_id, season) do
+    key = {:season_count, tmdb_id, season}
+
+    case Process.get(key, :miss) do
+      :miss ->
+        count =
+          case Tmdb.season(tmdb_id, season) do
+            {:ok, %{"episodes" => eps}} when is_list(eps) ->
+              today = Date.to_iso8601(Date.utc_today())
+              Enum.count(eps, &(&1["air_date"] not in [nil, ""] and &1["air_date"] <= today))
+
+            _ ->
+              nil
+          end
+
+        Process.put(key, count)
+        count
+
+      cached ->
+        cached
+    end
+  end
+
+  defp anime_episode_count(title) do
+    key = {:anime_count, title}
+
+    case Process.get(key, :miss) do
+      :miss ->
+        count =
+          case Kitsu.search(title) do
+            {:ok, [%{episode_count: c} | _]} when is_integer(c) and c > 0 -> c
+            _ -> nil
+          end
+
+        Process.put(key, count)
+        count
+
+      cached ->
+        cached
+    end
   end
 
   # Bad source (broken file, wrong audio, stutters): re-run the source flow
@@ -2038,11 +2187,11 @@ defmodule KinoTheatre.CLI do
             ["--sub-file=#{path}"]
 
           {:error, :no_provider} ->
-            if Config.subs_explicit?() do
-              IO.puts(:stderr, "KINO_SUBS is set but no subtitle provider is configured for " <>
-                "this content (OPENSUBTITLES_* — or JIMAKU_API_KEY for anime)")
-            end
-
+            # No external subtitle provider configured — that's fine: mpv
+            # auto-selects the embedded track in your language (--slang), so
+            # this is the normal path, not an error. External subs
+            # (OPENSUBTITLES_* / JIMAKU_API_KEY) are only a fallback for
+            # releases that ship none. Stay quiet.
             []
 
           {:error, reason} ->
@@ -2241,7 +2390,7 @@ defmodule KinoTheatre.CLI do
         ctx = Map.merge(ctx, %{anime: true, search_title: search_title})
 
         Sources.anime_episode_query(search_title, n)
-        |> with_library(anime_episode_sources(search_title, n, kitsu.anidb))
+        |> with_library(anime_episode_sources(search_title, n, kitsu.anidb, kitsu.kitsu_id))
         |> probe_and_pick([episode: n], ctx)
 
       anime?(details) and type == "movie" ->
